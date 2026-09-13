@@ -5,7 +5,7 @@
 
 [tools]
 # Rust toolchain. hoard uses edition 2024 (needs >= 1.85).
-rust = "1.97.1"
+rust = "1.98.1"
 # Git hook runner driving .pre-commit-config.yaml
 pre-commit = "latest"
 
