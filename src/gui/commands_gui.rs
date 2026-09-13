@@ -1,6 +1,6 @@
 use crate::config::HoardConfig;
-use crate::core::trove::Trove;
 use crate::core::HoardCmd;
+use crate::core::trove::Trove;
 use crate::gpt::prompt;
 use crate::gui::event::{Config, Event, Events};
 use crate::gui::help::{draw as draw_help, key_handler as key_handler_help};
@@ -13,13 +13,18 @@ use crate::gui::new_command::controls::key_handler as key_handler_create_command
 use crate::gui::new_command::render::draw as draw_new_command_input;
 use crate::gui::parameter_input::controls::key_handler as key_handler_parameter_input;
 use crate::gui::parameter_input::render::draw as draw_parameter_input;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use eyre::Result;
-use ratatui::{backend::TermionBackend, widgets::ListState, Terminal};
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+use ratatui::widgets::ListState;
 use std::fmt;
 use std::io::stdout;
 use std::time::Duration;
-use termion::raw::IntoRawMode;
-use termion::screen::IntoAlternateScreen;
+
+type TerminalType = Terminal<CrosstermBackend<std::io::Stdout>>;
 
 #[allow(clippy::struct_excessive_bools, clippy::struct_field_names)]
 pub struct State {
@@ -36,7 +41,6 @@ pub struct State {
     pub openai_key_set: bool,
     pub parameter_ending_token: String,
     pub parameter_token: String,
-    pub popup_message: String,
     pub provided_parameter_count: u16,
     pub query_gpt: bool,
     pub selected_command: Option<HoardCmd>,
@@ -57,7 +61,6 @@ impl State {
             EditSelection::Description => {
                 self.string_to_edit = cloned_selected_command.description;
             }
-
             EditSelection::Command => self.string_to_edit = cloned_selected_command.command,
             EditSelection::Namespace => (),
         };
@@ -146,8 +149,32 @@ impl EditSelection {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+/// Runs the interactive UI for the given trove and returns the command the
+/// user picked (if any). All mutations to `trove` are made in memory; the
+/// caller persists them to SQLite afterwards.
 pub fn run(trove: &mut Trove, config: &HoardConfig) -> Result<Option<HoardCmd>> {
+    enable_raw_mode()?;
+    let mut stdout = stdout();
+    crossterm::execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
+
+    let result = run_app(trove, config, &mut terminal);
+
+    // Restore the terminal regardless of how the app loop ended.
+    let _ = terminal.show_cursor();
+    let _ = crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = disable_raw_mode();
+    result
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_app(
+    trove: &mut Trove,
+    config: &HoardConfig,
+    terminal: &mut TerminalType,
+) -> Result<Option<HoardCmd>> {
     let events = Events::with_config(Config {
         tick_rate: Duration::from_millis(200),
     });
@@ -177,7 +204,6 @@ pub fn run(trove: &mut Trove, config: &HoardConfig) -> Result<Option<HoardCmd>> 
         provided_parameter_count: 0,
         error_message: String::new(),
         query_gpt: false,
-        popup_message: State::get_default_popupmsg(),
         buffered_tick: false,
         openai_key_set: !openai_api_key.is_empty(),
     };
@@ -185,34 +211,22 @@ pub fn run(trove: &mut Trove, config: &HoardConfig) -> Result<Option<HoardCmd>> 
     app_state.command_list.select(Some(0));
     app_state.namespace_tab.select(Some(0));
 
-    let stdout = stdout().into_raw_mode()?;
-    let stdout = stdout.into_alternate_screen().unwrap();
-    let backend = TermionBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
-
-    //let menu_titles = vec!["List", "Search", "Add", "Delete", "Quit"];
     let mut namespace_tabs: Vec<&str> = trove_clone.namespaces();
     namespace_tabs.insert(0, "All");
     loop {
         // Draw GUI
         match app_state.draw {
             DrawState::Search => {
-                draw_list_search(&mut app_state, config, &namespace_tabs, &mut terminal)?;
+                draw_list_search(&mut app_state, config, &namespace_tabs, terminal)?;
             }
             DrawState::ParameterInput => {
-                draw_parameter_input(&app_state, config, &mut terminal)?;
+                draw_parameter_input(&app_state, config, terminal)?;
             }
             DrawState::Help => {
-                draw_help(config, &mut terminal)?;
+                draw_help(config, terminal)?;
             }
             DrawState::Create => {
-                draw_new_command_input(
-                    &app_state,
-                    config,
-                    &mut terminal,
-                    &config.default_namespace,
-                )?;
+                draw_new_command_input(&app_state, config, terminal, &config.default_namespace)?;
             }
         }
 
@@ -255,30 +269,34 @@ pub fn run(trove: &mut Trove, config: &HoardConfig) -> Result<Option<HoardCmd>> 
                 if app_state.draw == DrawState::Create {
                     let _ = trove.add_command(output, true);
                     app_state.commands = trove.commands.clone();
-                    app_state.commands.sort_by(|a, b| b.usage_count.cmp(&a.usage_count));
+                    app_state
+                        .commands
+                        .sort_by_key(|c| std::cmp::Reverse(c.usage_count));
                     app_state.draw = DrawState::Search;
                 } else if app_state.control == ControlState::Edit {
                     // Command has been edited
                     trove.update_command_by_name(&output);
                     app_state.commands = trove.commands.clone();
-                    app_state.commands.sort_by(|a, b| b.usage_count.cmp(&a.usage_count));
+                    app_state
+                        .commands
+                        .sort_by_key(|c| std::cmp::Reverse(c.usage_count));
                     app_state.control = ControlState::Search;
                 } else if app_state.should_delete {
                     trove.remove_command(&output.name).ok();
                     app_state.commands = trove.commands.clone();
-                    app_state.commands.sort_by(|a, b| b.usage_count.cmp(&a.usage_count));
+                    app_state
+                        .commands
+                        .sort_by_key(|c| std::cmp::Reverse(c.usage_count));
                     app_state.should_delete = false;
                 } else {
                     // Command has been selected
                     // Update the command's meta info
                     let _ = trove.update_command_meta(&output);
-                    terminal.show_cursor()?;
                     return Ok(Some(output));
                 }
             }
 
             if app_state.should_exit {
-                terminal.show_cursor()?;
                 return Ok(None);
             }
         }

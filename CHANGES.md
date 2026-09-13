@@ -3,6 +3,24 @@
 All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](http://semver.org/).
 
+## Unreleased
+- 💾 Trove storage moved from YAML to a SQLite database (`trove.db`, WAL mode).
+  Legacy `trove.yml` files are imported automatically on first run.
+- 🧹 Refactored for idiomatic Rust (edition 2024): proper error types via `thiserror`,
+  no more `unwrap()` in production paths, dead code and unused dependencies removed
+  (`tokio`, `array_tool`, `h2`, `chrono`, `serde_json`, ...), blocking HTTP instead of
+  a never-awaited async future (URL imports now actually work).
+- 🚀 Performance: prepared statements in a single transaction per save, WAL + `NORMAL`
+  sync, no full-file rewrites; smaller, faster builds (no tokio "full").
+- 🎨 Dracula colorscheme as the new default theme (ratatui UI + dialoguer prompts).
+- 🧪 `cargo clippy --all-targets -- -D warnings` now passes (it did not before).
+- 📦 All dependencies updated to current major versions, with the code refactored to
+  match: ratatui 0.30 + crossterm (replacing ratatui 0.22 + termion), dialoguer 0.12
+  (truecolor Dracula prompts), reqwest 0.13, clap 4.6, comfy-table 8 (replacing the
+  unmaintained prettytable-rs), rand 0.10, thiserror 2, dirs 7,
+  `dotenv` → `dotenvy`, and the archived `chatgpt_blocking_rs` replaced with a direct
+  OpenAI API call.
+
 ## 2.0.0
 - ✨ Tracking how often a command is used or edited and some timestamps
 - ✨ Sorting commands by their usage count
@@ -11,7 +29,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - 🔧 Better error handling and better documentation
 - 🧪  Bunch more testing
 ## 1.4.2
-- 🐛 Fix a lifetime longevity issue around theming password prompts 
+- 🐛 Fix a lifetime longevity issue around theming password prompts
 ## 1.4.1
 - ✨ List available namespaces when creating a new command
 - Move from tui to ratatui. Thanks [a-kenji](https://github.com/Hyde46/hoard/pull/292)
@@ -42,9 +60,9 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - ✨ `hoard info` shows where `config.yml` and `trove.yml` files are located
 ## 🚀 1.0.0
 - ✨ Advanced export allowing subset of namespaces or commands to be exported
-- 🐛 Fix bug where selecting a command when running `hoard` as a `zsh` plugin produces gibberish rendered text in the terminal 
+- 🐛 Fix bug where selecting a command when running `hoard` as a `zsh` plugin produces gibberish rendered text in the terminal
 - ✨ Customizable GUI colors through ~/config/.hoard/config.yml
-- ✨ Support parameterized commands. Put '#' in place where a parameter is expected. When running `hoard pick <command_name>` or `hoard list` as a shell plugin and selecting a parameterized command, `hoard` will ask for all missing parameters to input before sending the complete command to your shell input. 
+- ✨ Support parameterized commands. Put '#' in place where a parameter is expected. When running `hoard pick <command_name>` or `hoard list` as a shell plugin and selecting a parameterized command, `hoard` will ask for all missing parameters to input before sending the complete command to your shell input.
 - ✨ Press `<F1>` when running `hoard list` to see all shortcuts
 - ✨ Make tags optional
 
@@ -69,7 +87,7 @@ Breaking changes:
 - Edit commands with `hoard edit --name <command_name>`
 - Ask user for new command name if a collision is detected on creating a new command and importing troves. Name + namespace have to be unique.
 
-## 0.1.5 
+## 0.1.5
 - Import other trove files `hoard import --file /path/to/trove.yml`
 - Import trove files from url `hoard import --url https://this.trove.com/trove.yml`
 - Move config files to `.config/.hoard` instead of `.hoard`

@@ -1,27 +1,21 @@
-use std::error::Error;
-use std::fmt;
+use thiserror::Error;
 
-#[derive(Debug)]
-pub struct HoardErr {
-    details: String,
-}
-
-impl HoardErr {
-    pub fn new(msg: &str) -> Self {
-        Self {
-            details: msg.to_string(),
-        }
-    }
-}
-
-impl fmt::Display for HoardErr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.details)
-    }
-}
-
-impl Error for HoardErr {
-    fn description(&self) -> &str {
-        &self.details
-    }
+/// Errors raised while validating or managing hoard commands.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum HoardError {
+    /// The command string is empty.
+    #[error("Command can't be empty")]
+    InvalidCommand,
+    /// The command name is empty.
+    #[error("Name can't be empty")]
+    EmptyName,
+    /// The command name contains whitespace.
+    #[error("Name can't contain whitespaces")]
+    NameWithWhitespace,
+    /// The tag list is empty.
+    #[error("Tags can't be empty")]
+    EmptyTags,
+    /// A command failed validation before being saved.
+    #[error("cannot save invalid command")]
+    InvalidCommandForSave,
 }

@@ -124,7 +124,7 @@ pub enum Commands {
 
     /// Synchronize your trove file on multiple clients. If no mode is selected, it will fetch your online trove file and synchronize it with your local trove file
     Sync {
-        ///
+        /// Sync mode to run
         #[arg(value_enum)]
         command: Mode,
     },

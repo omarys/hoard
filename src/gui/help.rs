@@ -1,15 +1,19 @@
 use crate::config::HoardConfig;
 use crate::core::HoardCmd;
 use crate::gui::commands_gui::{DrawState, State};
-use ratatui::backend::TermionBackend;
+use crate::theme::BACKGROUND;
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem};
-use ratatui::Terminal;
-use termion::event::Key;
-use termion::screen::AlternateScreen;
 
 pub const HELP_KEY: &str = "<F1>";
+
+/// Dracula background as a reusable style.
+fn bg() -> Style {
+    Style::default().bg(Color::Rgb(BACKGROUND.0, BACKGROUND.1, BACKGROUND.2))
+}
 const HELP_CONTENT: &[(&str, &str)] = &[
     ("Next item in command list", "<Ctrl-N> / <Down-Arrow>"),
     (
@@ -31,14 +35,13 @@ const HELP_CONTENT: &[(&str, &str)] = &[
 
 pub fn draw(
     config: &HoardConfig,
-    terminal: &mut Terminal<
-        TermionBackend<AlternateScreen<termion::raw::RawTerminal<std::io::Stdout>>>,
-    >,
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
 ) -> Result<(), eyre::Error> {
     terminal.draw(|rect| {
+        rect.render_widget(Block::default().style(bg()), rect.area());
         let help = Block::default()
             .borders(Borders::ALL)
-            .style(Style::default().fg(Color::Rgb(
+            .style(bg().fg(Color::Rgb(
                 config.primary_color.unwrap().0,
                 config.primary_color.unwrap().1,
                 config.primary_color.unwrap().2,
@@ -72,12 +75,12 @@ pub fn draw(
             .collect();
 
         let list = List::new(items).block(help);
-        rect.render_widget(list, rect.size());
+        rect.render_widget(list, rect.area());
     })?;
     Ok(())
 }
 
-pub fn key_handler(_input: Key, app: &mut State) -> Option<HoardCmd> {
+pub fn key_handler(_input: crossterm::event::KeyEvent, app: &mut State) -> Option<HoardCmd> {
     app.draw = DrawState::Search;
     None
 }

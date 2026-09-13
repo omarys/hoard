@@ -1,6 +1,9 @@
+# Local quality gates for hoard development. Install with `pre-commit install`.
+# The Rust hooks mirror the published hooks in .pre-commit-hooks.yaml, except
+# `fmt` runs in check mode so a commit never silently rewrites files.
 repos:
 -   repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v3.1.0
+    rev: v5.0.0
     hooks:
     -   id: check-byte-order-marker
     -   id: check-case-conflict
@@ -11,11 +14,36 @@ repos:
     -   id: mixed-line-ending
     -   id: trailing-whitespace
 -   repo: https://github.com/pre-commit/pre-commit
-    rev: v2.5.1
+    rev: v4.6.2
     hooks:
     -   id: validate_manifest
--   repo: https://github.com/doublify/pre-commit-rust
-    rev: master
+-   repo: local
     hooks:
     -   id: fmt
+        name: fmt
+        description: Format files with cargo fmt.
+        entry: cargo fmt -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
     -   id: cargo-check
+        name: cargo check
+        description: Check the package for errors.
+        entry: cargo check
+        language: system
+        types: [rust]
+        pass_filenames: false
+    -   id: clippy
+        name: clippy
+        description: Lint rust sources.
+        entry: cargo clippy --all-targets -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+    -   id: cargo-test
+        name: cargo test
+        description: Run the test suite.
+        entry: cargo test
+        language: system
+        types: [rust]
+        pass_filenames: false

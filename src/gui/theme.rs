@@ -1,6 +1,11 @@
-use console::{style, Style, StyledObject};
+use console::{Color, Style, StyledObject, style};
 use dialoguer::theme::Theme;
 use std::fmt;
+
+/// Maps a Dracula palette entry to a truecolor console color.
+const fn dracula(color: (u8, u8, u8)) -> Color {
+    Color::TrueColor(color.0, color.1, color.2)
+}
 
 #[allow(clippy::module_name_repetitions)]
 pub struct HoardTheme {
@@ -50,27 +55,28 @@ pub struct HoardTheme {
 #[allow(clippy::non_ascii_literal)]
 impl Default for HoardTheme {
     fn default() -> Self {
+        use crate::theme::{BACKGROUND, COMMENT, CYAN, FOREGROUND, GREEN, PINK, PURPLE, RED};
         Self {
-            defaults_style: Style::new().for_stderr().cyan(),
-            prompt_style: Style::new().for_stderr().bold(),
-            prompt_prefix: style("?".to_string()).for_stderr().yellow(),
-            prompt_suffix: style("›".to_string()).for_stderr().black().bright(),
-            success_prefix: style("✔".to_string()).for_stderr().green(),
-            success_suffix: style("·".to_string()).for_stderr().black().bright(),
-            error_prefix: style("✘".to_string()).for_stderr().red(),
-            error_style: Style::new().for_stderr().red(),
-            hint_style: Style::new().for_stderr().black().bright(),
-            values_style: Style::new().for_stderr().green(),
-            active_item_style: Style::new().for_stderr().cyan(),
-            inactive_item_style: Style::new().for_stderr(),
-            active_item_prefix: style("❯".to_string()).for_stderr().green(),
+            defaults_style: Style::new().for_stderr().fg(dracula(PURPLE)),
+            prompt_style: Style::new().for_stderr().bold().fg(dracula(FOREGROUND)),
+            prompt_prefix: style("?".to_string()).for_stderr().fg(dracula(PINK)),
+            prompt_suffix: style("›".to_string()).for_stderr().fg(dracula(COMMENT)),
+            success_prefix: style("✔".to_string()).for_stderr().fg(dracula(GREEN)),
+            success_suffix: style("·".to_string()).for_stderr().fg(dracula(COMMENT)),
+            error_prefix: style("✘".to_string()).for_stderr().fg(dracula(RED)),
+            error_style: Style::new().for_stderr().fg(dracula(RED)),
+            hint_style: Style::new().for_stderr().fg(dracula(COMMENT)),
+            values_style: Style::new().for_stderr().fg(dracula(CYAN)),
+            active_item_style: Style::new().for_stderr().fg(dracula(PURPLE)).bold(),
+            inactive_item_style: Style::new().for_stderr().fg(dracula(FOREGROUND)),
+            active_item_prefix: style("❯".to_string()).for_stderr().fg(dracula(PINK)),
             inactive_item_prefix: style(" ".to_string()).for_stderr(),
-            checked_item_prefix: style("✔".to_string()).for_stderr().green(),
-            unchecked_item_prefix: style("✘".to_string()).for_stderr().black(),
-            picked_item_prefix: style("❯".to_string()).for_stderr().green(),
+            checked_item_prefix: style("✔".to_string()).for_stderr().fg(dracula(GREEN)),
+            unchecked_item_prefix: style("✘".to_string()).for_stderr().fg(dracula(BACKGROUND)),
+            picked_item_prefix: style("❯".to_string()).for_stderr().fg(dracula(PINK)),
             unpicked_item_prefix: style(" ".to_string()).for_stderr(),
             #[cfg(feature = "fuzzy-select")]
-            fuzzy_cursor_style: Style::new().for_stderr().black().on_white(),
+            fuzzy_cursor_style: Style::new().for_stderr().bg(dracula(PURPLE)),
             inline_selections: true,
         }
     }
@@ -83,12 +89,12 @@ impl Theme for HoardTheme {
             write!(
                 f,
                 "{} {} ",
-                &self.prompt_prefix,
+                self.prompt_prefix,
                 self.prompt_style.apply_to(prompt)
             )?;
         }
 
-        write!(f, "{}", &self.prompt_suffix)
+        write!(f, "{}", self.prompt_suffix)
     }
 
     /// Formats an error
@@ -96,7 +102,7 @@ impl Theme for HoardTheme {
         write!(
             f,
             "{} {}",
-            &self.error_prefix,
+            self.error_prefix,
             self.error_style.apply_to(err)
         )
     }
@@ -112,7 +118,7 @@ impl Theme for HoardTheme {
             write!(
                 f,
                 "{} {} ",
-                &self.prompt_prefix,
+                self.prompt_prefix,
                 self.prompt_style.apply_to(prompt)
             )?;
         }
@@ -122,9 +128,9 @@ impl Theme for HoardTheme {
                 f,
                 "{} {} ",
                 self.hint_style.apply_to(&format!("({default})")),
-                &self.prompt_suffix
+                self.prompt_suffix
             ),
-            None => write!(f, "{} ", &self.prompt_suffix),
+            None => write!(f, "{} ", self.prompt_suffix),
         }
     }
 
@@ -139,7 +145,7 @@ impl Theme for HoardTheme {
             write!(
                 f,
                 "{} {} ",
-                &self.prompt_prefix,
+                self.prompt_prefix,
                 self.prompt_style.apply_to(prompt)
             )?;
         }
@@ -149,20 +155,20 @@ impl Theme for HoardTheme {
                 f,
                 "{} {}",
                 self.hint_style.apply_to("(y/n)"),
-                &self.prompt_suffix
+                self.prompt_suffix
             ),
             Some(true) => write!(
                 f,
                 "{} {} {}",
                 self.hint_style.apply_to("(y/n)"),
-                &self.prompt_suffix,
+                self.prompt_suffix,
                 self.defaults_style.apply_to("yes")
             ),
             Some(false) => write!(
                 f,
                 "{} {} {}",
                 self.hint_style.apply_to("(y/n)"),
-                &self.prompt_suffix,
+                self.prompt_suffix,
                 self.defaults_style.apply_to("no")
             ),
         }
@@ -179,7 +185,7 @@ impl Theme for HoardTheme {
             write!(
                 f,
                 "{} {} ",
-                &self.success_prefix,
+                self.success_prefix,
                 self.prompt_style.apply_to(prompt)
             )?;
         }
@@ -190,12 +196,12 @@ impl Theme for HoardTheme {
                 write!(
                     f,
                     "{} {}",
-                    &self.success_suffix,
+                    self.success_suffix,
                     self.values_style.apply_to(selection)
                 )
             }
             None => {
-                write!(f, "{}", &self.success_suffix)
+                write!(f, "{}", self.success_suffix)
             }
         }
     }
@@ -211,7 +217,7 @@ impl Theme for HoardTheme {
             write!(
                 f,
                 "{} {} ",
-                &self.success_prefix,
+                self.success_prefix,
                 self.prompt_style.apply_to(prompt)
             )?;
         }
@@ -219,7 +225,7 @@ impl Theme for HoardTheme {
         write!(
             f,
             "{} {}",
-            &self.success_suffix,
+            self.success_suffix,
             self.values_style.apply_to(sel)
         )
     }
@@ -245,12 +251,12 @@ impl Theme for HoardTheme {
             write!(
                 f,
                 "{} {} ",
-                &self.success_prefix,
+                self.success_prefix,
                 self.prompt_style.apply_to(prompt)
             )?;
         }
 
-        write!(f, "{} ", &self.success_suffix)?;
+        write!(f, "{} ", self.success_suffix)?;
 
         if self.inline_selections {
             for (idx, sel) in selections.iter().enumerate() {
@@ -356,7 +362,7 @@ impl Theme for HoardTheme {
             write!(
                 f,
                 "{} {} ",
-                &self.prompt_prefix,
+                self.prompt_prefix,
                 self.prompt_style.apply_to(prompt)
             )?;
         }
@@ -370,14 +376,14 @@ impl Theme for HoardTheme {
             write!(
                 f,
                 "{} {}{}{}",
-                &self.prompt_suffix, st_head, st_cursor, st_tail
+                self.prompt_suffix, st_head, st_cursor, st_tail
             )
         } else {
             let cursor = self.fuzzy_cursor_style.apply_to(" ");
             write!(
                 f,
                 "{} {}{}",
-                &self.prompt_suffix,
+                self.prompt_suffix,
                 search_term.to_string(),
                 cursor
             )

@@ -1,17 +1,18 @@
-use crate::core::{string_to_tags, HoardCmd};
+use crate::core::{HoardCmd, string_to_tags};
 use crate::gui::commands_gui::{ControlState, EditSelection, State};
-use termion::event::Key;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-pub fn key_handler(input: Key, state: &mut State) -> Option<HoardCmd> {
-    match input {
-        // Quit command
-        Key::Esc => {
-            // Only exit the edit mode
+pub fn key_handler(input: KeyEvent, state: &mut State) -> Option<HoardCmd> {
+    let ctrl = input.modifiers.contains(KeyModifiers::CONTROL);
+    match input.code {
+        // Quit edit mode
+        KeyCode::Esc => {
             state.control = ControlState::Search;
             None
         }
-        Key::Char('\n') => {
-            let mut edited_command = state.selected_command.clone().unwrap();
+        // Confirm edit
+        KeyCode::Enter | KeyCode::Char('\r') => {
+            let mut edited_command = state.selected_command.clone()?;
             let new_string = state.string_to_edit.clone();
             match state.edit_selection {
                 EditSelection::Description => edited_command.description = new_string,
@@ -21,22 +22,23 @@ pub fn key_handler(input: Key, state: &mut State) -> Option<HoardCmd> {
             };
             Some(edited_command)
         }
-        Key::Char('\t') => {
+        // Switch field to edit
+        KeyCode::Tab => {
             state.edit_selection = state.edit_selection.next();
             state.update_string_to_edit();
             None
         }
-        Key::Ctrl('c' | 'd' | 'g') => {
-            // Definitely exit program
+        // Exit program
+        KeyCode::Char('c' | 'd' | 'g') if ctrl => {
             state.should_exit = true;
             None
         }
         // Handle query input
-        Key::Backspace => {
+        KeyCode::Backspace => {
             state.string_to_edit.pop();
             None
         }
-        Key::Char(c) => {
+        KeyCode::Char(c) => {
             state.string_to_edit.push(c);
             None
         }

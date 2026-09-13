@@ -1,7 +1,7 @@
 [package]
 name = "hoard-rs"
 version = "2.0.0"
-edition = "2021"
+edition = "2024"
 readme = "README.md"
 license = "MIT"
 authors = ["Denis Heid"]
@@ -26,39 +26,42 @@ buildflags = ["--release"]
 name = "hoard"
 path = "src/main.rs"
 
+[features]
+# Passthrough for dialoguer's optional Theme methods implemented in `gui::theme`.
+# Only active when compiled with these features, matching upstream gating.
+password = ["dialoguer/password"]
+fuzzy-select = ["dialoguer/fuzzy-select"]
+
 [dependencies]
 # Command line argument parser
-clap = { version = "4.4.8", features = ["derive"] }
+clap = { version = "4.6.6", features = ["derive"] }
 # pretty dialogues in terminal
-dialoguer = "0.10.3"
-termion = "2.0.1"
-# Yaml support to save/load command pallettes
+dialoguer = "0.12.0"
+# Terminal backend for the interactive UI
+crossterm = "0.29.0"
+ratatui = { version = "0.30.2", features = ["crossterm"] }
+# Conversational prompts on top of console
+console = "0.16.6"
+# YAML only for trove import/export and the cloud sync protocol
+# (the crate is archived upstream; local storage is SQLite via rusqlite)
 serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.8"
-serde_json = "1.0"
-serde_with = "1.11.0"
-anyhow = "1.0.71"
-dirs = "4.0.0"
-log = "0.4"
-eyre = "0.6"
-simple_logger = "4.1.0"
-prettytable-rs = "0.10.0"
-ratatui = { version = "0.22.0", features = ["termion"] }
-chrono = { version = "0.4", features = ["serde"] }
-rand = { version = "0.8.4", features = ["std"] }
-thiserror = "1.0"
-crossbeam-channel = "0.5.8"
-tokio = { version = "1.25.0", features = ["full"] }
-array_tool = "1.0.3"
-reqwest = { version = "0.11.18", features = ["blocking", "json"] }
-url = { version = "2.4.0" }
-console = "0.15.7"
-enum-iterator = "1.4.0"
-base64 = "0.21.2"
-chatgpt_blocking_rs = "0.1.2"
-dotenv = "0.15.0"
-h2 = "0.3.20"
-regex = "1.10.2"
+serde_yaml = "0.9.34"
+anyhow = "1.0.104"
+eyre = "0.6.14"
+dirs = "7.0.0"
+# Table rendering for `hoard list --simple`
+comfy-table = "8.0.0"
+rand = "0.10.2"
+thiserror = "2.0.20"
+crossbeam-channel = "0.5.17"
+reqwest = { version = "0.13.5", features = ["blocking", "json"] }
+url = { version = "2.5.8" }
+base64 = "0.23.1"
+# .env loading (maintained fork of the archived `dotenv` crate)
+dotenvy = "0.15.7"
+regex = "1.13.1"
+# Local trove storage
+rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
 
 [dev-dependencies]
 tempfile = "3.3.0"

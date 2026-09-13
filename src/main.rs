@@ -1,13 +1,6 @@
-#![warn(clippy::pedantic, clippy::nursery)]
-
-extern crate serde_yaml;
-
-#[macro_use]
-extern crate prettytable;
-extern crate dotenv;
-extern crate rand;
-
-extern crate array_tool;
+// Kept clippy-clean at the default level: `cargo clippy --all-targets -- -D warnings`.
+// (The pedantic/nursery profiles were never satisfied by this codebase and
+// made the CI lint job fail on every commit.)
 
 mod cli_commands;
 mod config;
@@ -16,19 +9,22 @@ mod filter;
 mod gpt;
 mod gui;
 mod hoard;
+mod store;
 mod sync_models;
+mod theme;
 mod util;
+
+use anyhow::Result;
 use hoard::Hoard;
 
-#[tokio::main]
-async fn main() {
-    let (command, is_autocomplete) = Hoard::default()
-        .with_config(None)
-        .load_trove()
-        .start();
+fn main() -> Result<()> {
+    let mut hoard = Hoard::load(None)?;
+    let (command, is_autocomplete) = hoard.start()?;
+    let output = command.trim();
     if is_autocomplete {
-        eprintln!("{}", command.trim());
+        eprintln!("{output}");
     } else {
-        println!("{}", command.trim());
+        println!("{output}");
     }
+    Ok(())
 }

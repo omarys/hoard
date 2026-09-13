@@ -1,49 +1,48 @@
 use crate::config::HoardConfig;
 use crate::gui::commands_gui::State;
-use ratatui::backend::TermionBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use crate::theme::BACKGROUND;
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Paragraph};
-use ratatui::Terminal;
-use termion::screen::AlternateScreen;
+
+/// Dracula background as a reusable style.
+fn bg() -> Style {
+    Style::default().bg(Color::Rgb(BACKGROUND.0, BACKGROUND.1, BACKGROUND.2))
+}
 
 pub fn draw(
     app_state: &State,
     config: &HoardConfig,
-    terminal: &mut Terminal<
-        TermionBackend<AlternateScreen<termion::raw::RawTerminal<std::io::Stdout>>>,
-    >,
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     default_namespace: &str,
 ) -> Result<(), eyre::Error> {
     terminal.draw(|rect| {
-        let size = rect.size();
+        rect.render_widget(Block::default().style(bg()), rect.area());
+        let size = rect.area();
         // Overlay
-        let overlay_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .margin(1)
-            .constraints(
-                [
-                    Constraint::Percentage(30),
-                    Constraint::Percentage(30),
-                    Constraint::Percentage(10),
-                    Constraint::Percentage(20),
-                    Constraint::Percentage(10),
-                ]
-                .as_ref(),
-            )
-            .split(size);
+        let overlay_chunks = Layout::vertical([
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
+            Constraint::Percentage(10),
+            Constraint::Percentage(20),
+            Constraint::Percentage(10),
+        ])
+        .margin(1)
+        .split(size);
 
         let mut query_string = config.query_prefix.clone();
         query_string.push_str(&app_state.input.clone()[..]);
         let title_string = format!("Provide {} for the command", app_state.edit_selection);
 
-        let command_style = Style::default().fg(Color::Rgb(
+        let command_style = bg().fg(Color::Rgb(
             config.command_color.unwrap().0,
             config.command_color.unwrap().1,
             config.command_color.unwrap().2,
         ));
 
-        let primary_style = Style::default().fg(Color::Rgb(
+        let primary_style = bg().fg(Color::Rgb(
             config.primary_color.unwrap().0,
             config.primary_color.unwrap().1,
             config.primary_color.unwrap().2,

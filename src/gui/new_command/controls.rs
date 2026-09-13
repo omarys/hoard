@@ -1,35 +1,34 @@
 use crate::core::trove::Trove;
-use crate::core::{string_to_tags, HoardCmd};
+use crate::core::{HoardCmd, string_to_tags};
 use crate::gui::commands_gui::{DrawState, EditSelection, State};
-use termion::event::Key;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-pub fn key_handler(input: Key, app: &mut State, default_namespace: &str) -> Option<HoardCmd> {
+pub fn key_handler(input: KeyEvent, app: &mut State, default_namespace: &str) -> Option<HoardCmd> {
     // Make sure there is an empty command set
     if app.new_command.is_none() {
         app.new_command = Some(HoardCmd::default());
     }
-    match input {
-        Key::Esc => {
+    let ctrl = input.modifiers.contains(KeyModifiers::CONTROL);
+    match input.code {
+        KeyCode::Esc => {
             app.draw = DrawState::Search;
             app.new_command = None;
             app.edit_selection = EditSelection::Command;
             None
         }
-        // Quit command
-        Key::Ctrl('c' | 'd' | 'g') => {
+        // Quit program
+        KeyCode::Char('c' | 'd' | 'g') if ctrl => {
             app.should_exit = true;
             app.new_command = None;
             app.edit_selection = EditSelection::Command;
             None
         }
-        Key::Char('\n') => {
-            let mut command = app.new_command.clone().unwrap();
+        KeyCode::Enter | KeyCode::Char('\r') => {
+            let mut command = app.new_command.clone()?;
             let parameter = app.input.clone();
             app.error_message = match app.edit_selection {
                 EditSelection::Command => {
                     command.command = parameter.clone();
-                    // when HoardCmd::is_command_valid(&parameter) returns an error, read out the rror and return
-                    // that else return empty string
                     match HoardCmd::is_command_valid(&parameter) {
                         Ok(()) => String::new(),
                         Err(error) => error.to_string(),
@@ -84,11 +83,11 @@ pub fn key_handler(input: Key, app: &mut State, default_namespace: &str) -> Opti
             None
         }
         // Handle query input
-        Key::Backspace => {
+        KeyCode::Backspace => {
             app.input.pop();
             None
         }
-        Key::Char(c) => {
+        KeyCode::Char(c) => {
             app.input.push(c);
             None
         }

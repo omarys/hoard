@@ -1,37 +1,36 @@
 use crate::config::HoardConfig;
 use crate::gui::commands_gui::State;
+use crate::theme::BACKGROUND;
 use crate::util::{split_with_delim, string_find_next, translate_number_to_nth};
-use ratatui::backend::TermionBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout};
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Alignment, Constraint, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
-use ratatui::Terminal;
-use termion::screen::AlternateScreen;
+
+/// Dracula background as a reusable style.
+fn bg() -> Style {
+    Style::default().bg(Color::Rgb(BACKGROUND.0, BACKGROUND.1, BACKGROUND.2))
+}
 
 pub fn draw(
     app_state: &State,
     config: &HoardConfig,
-    terminal: &mut Terminal<
-        TermionBackend<AlternateScreen<termion::raw::RawTerminal<std::io::Stdout>>>,
-    >,
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
 ) -> Result<(), eyre::Error> {
     terminal.draw(|rect| {
-        let size = rect.size();
+        rect.render_widget(Block::default().style(bg()), rect.area());
+        let size = rect.area();
         // Overlay
-        let overlay_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .margin(1)
-            .constraints(
-                [
-                    Constraint::Percentage(40),
-                    Constraint::Percentage(10),
-                    Constraint::Percentage(10),
-                    Constraint::Percentage(40),
-                ]
-                .as_ref(),
-            )
-            .split(size);
+        let overlay_chunks = Layout::vertical([
+            Constraint::Percentage(40),
+            Constraint::Percentage(10),
+            Constraint::Percentage(10),
+            Constraint::Percentage(40),
+        ])
+        .margin(1)
+        .split(size);
 
         let mut query_string = config.query_prefix.clone();
         query_string.push_str(&app_state.input.clone()[..]);
@@ -40,13 +39,13 @@ pub fn draw(
             translate_number_to_nth(app_state.provided_parameter_count)
         );
 
-        let command_style = Style::default().fg(Color::Rgb(
+        let command_style = bg().fg(Color::Rgb(
             config.command_color.unwrap().0,
             config.command_color.unwrap().1,
             config.command_color.unwrap().2,
         ));
 
-        let primary_style = Style::default().fg(Color::Rgb(
+        let primary_style = bg().fg(Color::Rgb(
             config.primary_color.unwrap().0,
             config.primary_color.unwrap().1,
             config.primary_color.unwrap().2,

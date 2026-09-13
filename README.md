@@ -29,6 +29,22 @@
 
 ![Example usage](img/hoard_usage_example.gif)
 
+## ✨ What's new
+
+- 💾 Commands are stored in a **SQLite database** (`trove.db`) instead of a YAML file —
+  faster writes, single-row updates, WAL journaling. Legacy `trove.yml` files are
+  imported automatically on first run; YAML remains only for import/export and sync.
+- 🎨 **Dracula colorscheme** as the default theme (ratatui UI + prompt dialogs).
+- 📦 All dependencies bumped to current versions: ratatui 0.30 + crossterm (terminal
+  backend), dialoguer 0.12, reqwest 0.13, clap 4.6, comfy-table 8, rand 0.10, thiserror 2.
+- 🧹 Idiomatic Rust refresher: edition 2024, `thiserror` error types, no `unwrap()` in
+  production paths, dead code and abandoned dependencies removed (the GPT integration
+  now calls the OpenAI HTTP API directly instead of a dead wrapper crate).
+- 🧪 `cargo clippy --all-targets -- -D warnings` and 60+ tests pass; a `pre-commit`
+  config runs fmt / check / clippy / tests on every commit.
+
+Full history in [CHANGES.md](CHANGES.md).
+
 #### What is a command organizer?
 
 A command organizer lets you save commands that you often use, but are too complicated or long to remember.
@@ -74,7 +90,7 @@ cargo build --release
 
 Find the binaries in `./target/release/hoard`
 Move it to wherever you need it ( Like `/usr/local/bin/hoard` )
-Or run 
+Or run
 ```
 cargo install --path .
 ```
@@ -163,13 +179,13 @@ hoard new
 If a parameter is not known when saving the command, put a `#` ( Or your customized token from your `~/.config/hoard/config.yml` )
 You can also name your parameters like this:
 ```
-echo "My name is #first and I live at #city. Did I tell you my name, #first?" 
+echo "My name is #first and I live at #city. Did I tell you my name, #first?"
 ```
 When putting `#first` you only have to do it once for each occurrence in the command.
 A parameter name is defined as everything followed by the token until the first space character is found.
 Alternatively you can determine where the named parameter ends by putting a `!` ( Or your customized token from your `~/.config/hoard.config.yml`)
 ```
-echo "My name is #first named parameter! and I live at #city. Did I tell you my name, #first?" 
+echo "My name is #first named parameter! and I live at #city. Did I tell you my name, #first?"
 ```
 #### Search through command trove
 
@@ -183,9 +199,10 @@ Or alternatively, if not installed as a plugin, the interactive search can still
 hoard list
 ```
 
-When running `hoard list` as a shell plugin and selecting a parameterized command, `hoard` will ask for all missing parameters to input before sending the complete command to your shell input. 
+When running `hoard list` as a shell plugin and selecting a parameterized command, `hoard` will ask for all missing parameters to input before sending the complete command to your shell input.
 
-If there is a `trove.yml` file present in the local directory, `hoard` will only load this trove file and not display your "global" trove!
+Commands are stored in a local SQLite database at `~/.config/hoard/trove.db` (WAL mode, tuned for low-latency single-user writes).
+If there is a `trove.db` file present in the local directory, `hoard` will only load this database and not display your "global" trove! A legacy `trove.yml` next to the database is imported automatically on first run.
 ( Edit ~/.config/hoard/config.yml `read_from_current_directory` to disable )
 
 #### chatGPT integration
@@ -254,11 +271,17 @@ hoard edit <name>
 
 #### Info
 
-Shows location of config file and trove file
+Shows location of config file and trove database
 
 ```
 hoard info
 ```
+
+#### Colorscheme
+
+hoard ships with the [Dracula](https://draculatheme.com) colorscheme. The colors used by the
+interactive UI are configurable via `primary_color`, `secondary_color`, `tertiary_color` and
+`command_color` in `~/.config/hoard/config.yml`.
 
 #### Set parameter token
 
@@ -285,7 +308,7 @@ hoard export /path/to/exported/trove.yml
 
 <a name="shortcuts"/>
 
-## :zap: Hoard list shortcuts 
+## :zap: Hoard list shortcuts
 
 Show list of commands in the GUI
 ```

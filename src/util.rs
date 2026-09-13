@@ -48,11 +48,11 @@ pub fn split_with_delim(s: &str, delim: &str) -> Vec<String> {
         result.push(s[start..].to_string());
     }
 
-    while result.first().map_or(false, std::string::String::is_empty) {
+    while result.first().is_some_and(String::is_empty) {
         result.remove(0);
     }
 
-    while result.last().map_or(false, std::string::String::is_empty) {
+    while result.last().is_some_and(String::is_empty) {
         result.pop();
     }
 

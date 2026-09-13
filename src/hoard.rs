@@ -1,127 +1,124 @@
-use crate::cli_commands::{Cli, Commands};
-use base64::engine::general_purpose;
-use clap::Parser;
-use dotenv::dotenv;
-use log::info;
-use reqwest::{StatusCode, Url};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
-use url::ParseError;
-
-use crate::cli_commands::Mode;
-use crate::config::HoardConfig;
-use crate::config::{load_or_build_config, save_hoard_config_file, save_parameter_token};
-use crate::core::trove::Trove;
+use crate::cli_commands::{Cli, Commands, Mode};
+use crate::config::defaults;
+use crate::config::{
+    HoardConfig, load_or_build_config, save_hoard_config_file, save_parameter_token,
+};
 use crate::core::HoardCmd;
+use crate::core::trove::Trove;
 use crate::filter::query_trove;
 use crate::gui::commands_gui;
 use crate::gui::prompts::{
-    prompt_input, prompt_multiselect_options, prompt_password, prompt_password_repeat,
-    prompt_yes_or_no, Confirmation,
+    Confirmation, prompt_input, prompt_multiselect_options, prompt_password,
+    prompt_password_repeat, prompt_yes_or_no,
 };
+use crate::store::Db;
 use crate::sync_models::TokenResponse;
 use crate::util::rem_first_and_last;
+use anyhow::{Context, Result};
 use base64::Engine as _;
-#[derive(Default, Debug)]
+use base64::engine::general_purpose;
+use clap::Parser;
+use dotenvy::dotenv;
+use reqwest::StatusCode;
+use reqwest::Url;
+use std::path::Path;
+
+/// The hoard application: configuration, the in-memory trove and its
+/// SQLite-backed persistence.
 pub struct Hoard {
     config: HoardConfig,
     trove: Trove,
+    db: Db,
 }
 
 impl Hoard {
-    pub fn with_config(&mut self, hoard_home_path: Option<String>) -> &mut Self {
-        info!("Loading config");
-        match load_or_build_config(hoard_home_path) {
-            Ok(config) => self.config = config,
-            Err(err) => {
-                eprintln!("ERROR: {err}");
-                err.chain()
-                    .skip(1)
-                    .for_each(|cause| eprintln!("because: {cause}"));
-                std::process::exit(1);
-            }
-        };
-        self
+    /// Loads configuration, opens the trove database and loads all commands.
+    pub fn load(config_home_path: Option<String>) -> Result<Self> {
+        dotenv().ok();
+        let config = load_or_build_config(config_home_path)?;
+        let db_path = config
+            .trove_path
+            .as_deref()
+            .context("trove path is not configured")?;
+        let db = Db::open(db_path)?;
+        let trove = Trove::from_commands(&db.commands()?);
+        Ok(Self { config, trove, db })
     }
 
-    pub fn start(&mut self) -> (String, bool) {
-        dotenv().ok();
-        let mut autocomplete_command = String::new();
+    /// Runs the parsed CLI command and returns the selected command string
+    /// (if any) together with whether it is meant for shell autocomplete.
+    pub fn start(&mut self) -> Result<(String, bool)> {
         let cli = Cli::parse();
+        let mut autocomplete_command = String::new();
 
-        match &cli.command {
-            Commands::Info {} => {
-                self.show_info();
-            }
+        match cli.command {
+            Commands::Info {} => self.show_info(),
             Commands::New {
                 name,
                 tags,
                 command,
                 description,
-            } => {
-                self.new_command(
-                    name.clone(),
-                    tags.clone(),
-                    command.clone(),
-                    description.clone(),
-                );
-            }
+            } => self.new_command(name, tags, command, description)?,
             Commands::List {
                 filter,
                 json,
                 simple,
             } => {
-                let commands =
-                    self.list_commands(simple.to_owned(), json.to_owned(), filter.clone());
-                if let Some(c) = commands {
-                    autocomplete_command = c;
-                }
+                autocomplete_command = self
+                    .list_commands(simple, json, filter)?
+                    .unwrap_or_default()
             }
-            Commands::Pick { name } => {
-                self.pick_command(name);
-            }
-            Commands::Remove { name } => {
-                self.remove_command(name);
-            }
-            Commands::RemoveNamespace { namespace } => {
-                self.remove_namespace(namespace);
-            }
-            Commands::SetParameterToken { name } => {
-                self.set_parameter_token(name);
-            }
-            Commands::Import { uri } => {
-                self.import_trove(uri);
-            }
-            Commands::Export { path } => {
-                self.export_command(path);
-            }
-            Commands::Edit { name } => {
-                self.edit_command(name);
-            }
-            Commands::ShellConfig { shell } => {
-                Self::shell_config_command(shell);
-            }
-            Commands::Sync { command } => {
-                self.sync(*command);
-            }
+            Commands::Pick { name } => self.pick_command(&name)?,
+            Commands::Remove { name } => self.remove_command(&name)?,
+            Commands::RemoveNamespace { namespace } => self.remove_namespace(&namespace)?,
+            Commands::SetParameterToken { name } => self.set_parameter_token(&name)?,
+            Commands::Import { uri } => self.import_trove(&uri)?,
+            Commands::Export { path } => self.export_command(&path)?,
+            Commands::Edit { name } => self.edit_command(&name)?,
+            Commands::ShellConfig { shell } => Self::shell_config_command(&shell),
+            Commands::Sync { command } => self.sync(command)?,
         }
 
-        (autocomplete_command, cli.autocomplete)
+        Ok((autocomplete_command, cli.autocomplete))
     }
 
+    /// Persists the in-memory trove to SQLite.
+    fn persist(&self) -> Result<()> {
+        self.db.sync(&self.trove.commands)
+    }
+
+    /// Prints the paths of the config file and the trove database.
     pub fn show_info(&self) {
-        // Print out path to hoard config file and path to where the trove file is stored
-        if let Some(config_home_path) = self.config.config_home_path.clone() {
+        if let Some(config_home_path) = &self.config.config_home_path {
             println!(
                 "🔧 Config file is located at {}",
                 config_home_path.display()
             );
         }
-
-        if let Some(trove_path) = self.config.trove_path.clone() {
-            println!("✨ Trove file is located at {}", trove_path.display());
+        if let Some(trove_path) = &self.config.trove_path {
+            println!("✨ Trove database is located at {}", trove_path.display());
         }
+    }
+
+    fn parameter_token(&self) -> &str {
+        self.config
+            .parameter_token
+            .as_deref()
+            .unwrap_or(defaults::PARAMETER_TOKEN)
+    }
+
+    fn parameter_ending_token(&self) -> &str {
+        self.config
+            .parameter_ending_token
+            .as_deref()
+            .unwrap_or(defaults::PARAMETER_ENDING_TOKEN)
+    }
+
+    fn sync_server_url(&self) -> &str {
+        self.config
+            .sync_server_url
+            .as_deref()
+            .unwrap_or(defaults::SYNC_SERVER_URL)
     }
 
     fn new_command(
@@ -130,21 +127,20 @@ impl Hoard {
         tags: Option<String>,
         command: Option<String>,
         description: Option<String>,
-    ) {
+    ) -> Result<()> {
         let trove_namespaces = self.trove.namespaces();
-        //trove_namespaces.push(&default_ns_clone);
         let new_command = HoardCmd::default()
             .with_command_string_input(
                 command,
-                &self.config.parameter_token.clone().unwrap(),
-                &self.config.parameter_ending_token.clone().unwrap(),
+                self.parameter_token(),
+                self.parameter_ending_token(),
             )
             .with_namespace_input(&trove_namespaces)
             .with_name_input(name, &self.trove)
             .with_description_input(description.unwrap_or_default())
             .with_tags_input(tags);
-        let _ = self.trove.add_command(new_command, true);
-        self.save_trove(None);
+        self.trove.add_command(new_command, true)?;
+        self.persist()
     }
 
     fn list_commands(
@@ -152,171 +148,141 @@ impl Hoard {
         is_simple: bool,
         is_structured: bool,
         filter: Option<String>,
-    ) -> Option<String> {
+    ) -> Result<Option<String>> {
         if self.trove.is_empty() {
             println!("No command hoarded.\nRun [ hoard new ] first to hoard a command.");
         } else if is_simple {
             self.trove.print_trove();
         } else if is_structured {
-            // Return list of commands in json format, filtered by `filter`
-            let query_string: String = filter.unwrap_or_default();
-            let filtered_trove = query_trove(&self.trove, &query_string);
-            return Some(filtered_trove.to_yaml());
+            // Structured output (YAML), filtered by `filter`
+            let query = filter.unwrap_or_default();
+            let filtered_trove = query_trove(&self.trove, &query);
+            return Ok(Some(filtered_trove.to_yaml()));
         } else {
             match commands_gui::run(&mut self.trove, &self.config) {
                 Ok(selected_command) => {
-                    self.save_trove(None);
-                    if let Some(c) = selected_command {
-                        // Is set if a command is selected in GUI
-                        if !c.command.is_empty() {
-                            //TODO: If run as cli program, copy command into clipboard, else will be written to READLINE_LINE
-                            return Some(c.command);
-                        }
+                    self.persist()?;
+                    if let Some(command) = selected_command
+                        && !command.command.is_empty()
+                    {
+                        return Ok(Some(command.command));
                     }
                 }
-                Err(e) => {
-                    println!("{e}");
-                }
+                Err(err) => println!("{err}"),
             }
         }
-        None
+        Ok(None)
     }
 
-    fn pick_command(&mut self, name: &str) {
-        let command_result = self.trove.pick_command(&self.config, name);
-        match command_result {
-            Ok(c) => {
-                println!("{}", c.command);
-            }
-            Err(e) => eprintln!("{e}"),
-        }
+    fn pick_command(&self, name: &str) -> Result<()> {
+        let command = self.trove.pick_command(&self.config, name)?;
+        println!("{}", command.command);
+        Ok(())
     }
 
-    fn remove_command(&mut self, command_name: &str) {
-        let command_result = self.trove.remove_command(command_name);
-        match command_result {
-            Ok(()) => {
-                println!("Removed [{command_name}]");
-            }
-            Err(e) => eprintln!("{e}"),
-        }
-        self.save_trove(None);
+    fn remove_command(&mut self, command_name: &str) -> Result<()> {
+        self.trove.remove_command(command_name)?;
+        println!("Removed [{command_name}]");
+        self.persist()
     }
 
-    fn remove_namespace(&mut self, namespace: &str) {
-        let command_result = self.trove.remove_namespace_commands(namespace);
-        match command_result {
-            Ok(()) => {
-                println!("Removed all commands of namespace [{namespace}]");
-            }
-            Err(e) => eprintln!("{e}"),
-        }
-        self.save_trove(None);
+    fn remove_namespace(&mut self, namespace: &str) -> Result<()> {
+        self.trove.remove_namespace_commands(namespace)?;
+        println!("Removed all commands of namespace [{namespace}]");
+        self.persist()
     }
 
-    fn import_trove(&mut self, path: &str) {
-        match Url::parse(path) {
-            Ok(url) => match reqwest_trove(url) {
-                Ok(trove_string) => {
-                    let imported_trove = Trove::load_trove_from_string(&trove_string[..]);
-                    self.trove.merge_trove(&imported_trove);
-                    self.save_trove(None);
-                }
-                Err(e) => {
-                    println!("Could not import trove from url: {e}");
-                }
-            },
-            Err(err) => {
-                if err == ParseError::RelativeUrlWithoutBase {
-                    let imported_trove = Trove::load_trove_file(&Some(PathBuf::from(path)));
-                    self.trove.merge_trove(&imported_trove);
-                    self.save_trove(None);
-                } else {
-                    eprintln!("Not a valid URL or file path");
-                }
+    fn import_trove(&mut self, uri: &str) -> Result<()> {
+        let imported = match Url::parse(uri) {
+            Ok(url) if matches!(url.scheme(), "http" | "https") => {
+                let trove_yaml = reqwest::blocking::get(url)?.text()?;
+                Trove::from_yaml_str(&trove_yaml)?
             }
-        }
+            _ => Trove::from_yaml_file(Path::new(uri))
+                .with_context(|| format!("Not a valid URL or file path: {uri}"))?,
+        };
+        self.trove.merge_trove(&imported);
+        self.persist()
     }
 
-    fn export_command(&self, path: &str) {
-        let target_path = PathBuf::from(path);
-        if target_path.file_name().is_some() {
-            let namespaces = self.trove.namespaces();
-
-            let selected_namespaces = prompt_multiselect_options(
-                "Export specific namespaces?",
-                "Namespaces to export ( Space to select )",
-                &namespaces,
-                |namespace| *namespace,
-            );
-
-            if selected_namespaces.is_empty() {
-                println!("Nothing selected");
-                return;
-            }
-
-            let commands = self
-                .trove
-                .commands
-                .iter()
-                .filter(|command| selected_namespaces.contains(&command.namespace.as_str()))
-                .collect::<Vec<_>>();
-
-            let selected_commands = prompt_multiselect_options(
-                "Export specific commands?",
-                "Commands to export ( Space to select )",
-                &commands,
-                |command| command.name.as_str(),
-            );
-
-            if selected_commands.is_empty() {
-                println!("Nothing selected");
-                return;
-            }
-
-            let mut trove_for_export = Trove::default();
-            for command in selected_commands {
-                let _ = trove_for_export.add_command(command.clone(), true);
-            }
-
-            trove_for_export.save_trove_file(&target_path);
-        } else {
+    fn export_command(&self, path: &str) -> Result<()> {
+        let target_path = Path::new(path);
+        if target_path.file_name().is_none() {
             println!("No valid path with filename provided.");
+            return Ok(());
         }
+
+        let namespaces = self.trove.namespaces();
+        let selected_namespaces = prompt_multiselect_options(
+            "Export specific namespaces?",
+            "Namespaces to export ( Space to select )",
+            &namespaces,
+            |namespace| *namespace,
+        );
+        if selected_namespaces.is_empty() {
+            println!("Nothing selected");
+            return Ok(());
+        }
+
+        let commands = self
+            .trove
+            .commands
+            .iter()
+            .filter(|command| selected_namespaces.contains(&command.namespace.as_str()))
+            .collect::<Vec<_>>();
+
+        let selected_commands = prompt_multiselect_options(
+            "Export specific commands?",
+            "Commands to export ( Space to select )",
+            &commands,
+            |command| command.name.as_str(),
+        );
+        if selected_commands.is_empty() {
+            println!("Nothing selected");
+            return Ok(());
+        }
+
+        let mut trove_for_export = Trove::default();
+        for command in selected_commands {
+            trove_for_export.add_command(command.clone(), true)?;
+        }
+        trove_for_export.to_yaml_file(target_path)
     }
 
-    pub fn set_parameter_token(&self, parameter_token: &str) {
-        if let Some(config_path) = self.config.config_home_path.clone() {
-            if !save_parameter_token(&self.config, &config_path, parameter_token) {
-                std::process::exit(1);
-            }
-        }
+    fn set_parameter_token(&self, parameter_token: &str) -> Result<()> {
+        let config_path = self
+            .config
+            .config_home_path
+            .as_deref()
+            .context("config home path is not configured")?;
+        save_parameter_token(&self.config, config_path, parameter_token)
     }
 
-    fn edit_command(&mut self, command_name: &str) {
+    fn edit_command(&mut self, command_name: &str) -> Result<()> {
         println!("Editing {command_name}");
         let command_to_edit = self.trove.pick_command(&self.config, command_name);
 
         let trove_namespaces = self.trove.namespaces();
         match command_to_edit {
-            Ok(c) => {
-                println!("{}", c.command);
+            Ok(command) => {
+                println!("{}", command.command);
                 let new_command = HoardCmd::default()
                     .with_command_string_input(
-                        Some(c.command.clone()),
-                        &self.config.parameter_token.clone().unwrap(),
-                        &self.config.parameter_ending_token.clone().unwrap(),
+                        Some(command.command.clone()),
+                        self.parameter_token(),
+                        self.parameter_ending_token(),
                     )
-                    .with_name_input(Some(c.name.clone()), &self.trove)
-                    .with_description_input(c.description.clone())
-                    .with_tags_input(Some(c.get_tags_as_string()))
+                    .with_name_input(Some(command.name.clone()), &self.trove)
+                    .with_description_input(command.description.clone())
+                    .with_tags_input(Some(command.get_tags_as_string()))
                     .with_namespace_input(&trove_namespaces);
-                self.trove.remove_command(command_name).ok();
-                let _ = self.trove.add_command(new_command, true);
-                self.save_trove(None);
+                self.trove.remove_command(command_name)?;
+                self.trove.add_command(new_command, true)?;
+                self.persist()?;
             }
-            Err(_e) => eprintln!("Could not find command {command_name} to edit"),
+            Err(_) => eprintln!("Could not find command {command_name} to edit"),
         }
+        Ok(())
     }
 
     fn shell_config_command(shell: &str) {
@@ -332,196 +298,197 @@ impl Hoard {
         print!("{src}");
     }
 
-    pub fn load_trove(&mut self) -> &mut Self {
-        self.trove = Trove::load_trove_file(&self.config.trove_path);
-        self
+    fn trove_backup_path(&self) -> Result<std::path::PathBuf> {
+        self.config
+            .trove_path
+            .as_deref()
+            .map(|p| p.with_extension("db.bk"))
+            .context("trove path is not configured")
     }
 
-    pub fn save_trove(&self, path: Option<&Path>) {
-        let path_to_save = path.unwrap_or_else(|| self.config.trove_path.as_ref().unwrap());
-        self.trove.save_trove_file(path_to_save);
+    /// Stores a consistent snapshot of the database before a `sync get` merge.
+    fn backup_trove(&self) -> Result<()> {
+        self.db.backup_to(&self.trove_backup_path()?)
     }
 
-    fn save_backup_trove(&self, path: Option<&Path>) {
-        let backup_trove_path_str = format!(
-            "{}.bk",
-            self.config.trove_path.as_ref().unwrap().to_str().unwrap()
-        );
-        let backup_trove_path = PathBuf::from_str(&backup_trove_path_str).ok().unwrap();
-        let path_to_save = path.unwrap_or(&backup_trove_path);
-        self.trove.save_trove_file(path_to_save);
-    }
-
-    fn revert_trove(&self) {
-        let trove_path = self.config.trove_path.as_ref().unwrap();
-        let backup_trove_path_str = format!("{}.bk", trove_path.to_str().unwrap());
-        let backup_trove_path = PathBuf::from_str(&backup_trove_path_str).ok().unwrap();
-        if backup_trove_path.exists() {
-            if matches!(prompt_yes_or_no("Found a backup from just before the last time you ran `hoard sync`. Are you sure you want to revert to this state?"), Confirmation::Yes) {
-                let e = fs::remove_file(trove_path);
-                // make clippy happy
-                drop(e);
-                fs::rename(backup_trove_path_str, trove_path).unwrap();
-                println!("Done!");
-            } else {
-                println!("Keeping current trove file...");
-            }
+    /// Restores the database from the backup taken before the last `sync get`.
+    fn revert_trove(&mut self) -> Result<()> {
+        let backup_path = self.trove_backup_path()?;
+        if !backup_path.exists() {
+            println!("No trove backup found.");
+            return Ok(());
         }
+        if matches!(
+            prompt_yes_or_no(
+                "Found a backup from just before the last time you ran `hoard sync`. Are you sure you want to revert to this state?"
+            ),
+            Confirmation::Yes
+        ) {
+            let backup = Db::open(&backup_path)?;
+            let commands = backup.commands()?;
+            self.db.sync(&commands)?;
+            self.trove = Trove::from_commands(&commands);
+            println!("Done!");
+        } else {
+            println!("Keeping current trove database...");
+        }
+        Ok(())
     }
 
-    fn register_user(&mut self) {
+    fn register_user(&self) -> Result<()> {
         println!("Registering account..");
         let user_email = prompt_input("Email: ", false, None);
-        let user_pw: String = prompt_password_repeat("Password: ");
+        let user_pw = prompt_password_repeat("Password: ");
         let client = reqwest::blocking::Client::new();
-        let register_url = format!("{}register", self.config.sync_server_url.clone().unwrap());
+        let register_url = format!("{}register", self.sync_server_url());
         let register_body = format!("{{\"password\": \"{user_pw}\",\"email\": \"{user_email}\"}}");
         let body = client
             .post(register_url)
             .body(register_body)
             .header("Content-Type", "application/json")
-            .send()
-            .unwrap();
+            .send()?;
         if body.status() == StatusCode::CREATED {
-            println!("Created new user! Verification not needed for now. Run `hoard sync login` next.\n\nPlease consider supporting further development and help offset server costs here:\nbuy.stripe.com/9AQ9Bm6Nx4qb6YwaEE\nThis is the only time this message will pop up :)");
+            println!(
+                "Created new user! Verification not needed for now. Run `hoard sync login` next.\n\nPlease consider supporting further development and help offset server costs here:\nbuy.stripe.com/9AQ9Bm6Nx4qb6YwaEE\nThis is the only time this message will pop up :)"
+            );
         } else {
             println!("Something went all wrong. Try another email.");
         }
+        Ok(())
     }
 
-    fn login(&mut self) {
+    fn login(&mut self) -> Result<()> {
         println!("Logging in..");
         let user_email = prompt_input("Email: ", false, None);
-        let user_pw: String = prompt_password("Password: ");
-        let register_body = format!("{{\"password\": \"{user_pw}\",\"email\": \"{user_email}\"}}");
+        let user_pw = prompt_password("Password: ");
+        let login_body = format!("{{\"password\": \"{user_pw}\",\"email\": \"{user_email}\"}}");
         let client = reqwest::blocking::Client::new();
-        let register_url = format!("{}token/new", self.config.sync_server_url.clone().unwrap());
+        let token_url = format!("{}token/new", self.sync_server_url());
         let body = client
-            .get(register_url)
-            .body(register_body)
+            .get(token_url)
+            .body(login_body)
             .header("Content-Type", "application/json")
-            .send()
-            .unwrap();
+            .send()?;
         if body.status() == StatusCode::CREATED {
-            let response_text = body.text().unwrap();
-            let token = serde_yaml::from_str::<TokenResponse>(&response_text).unwrap();
+            let token: TokenResponse = body.json()?;
             let b64_token = general_purpose::STANDARD.encode(token.token);
             self.config.api_token = Some(b64_token);
-            save_hoard_config_file(&self.config, &self.config.clone().config_home_path.unwrap())
-                .unwrap();
+            let config_path = self
+                .config
+                .config_home_path
+                .as_deref()
+                .context("config home path is not configured")?;
+            save_hoard_config_file(&self.config, config_path)?;
             println!("Success!");
         } else {
             println!("Invalid Email and password combination.");
         }
+        Ok(())
     }
 
-    fn get_trove_file(&self) -> Option<Trove> {
+    fn get_trove_file(&self) -> Result<Option<Trove>> {
         println!("Syncing ...");
-        let token = self.config.api_token.clone();
+        let token = self
+            .config
+            .api_token
+            .as_deref()
+            .context("No API token set, please log in")?;
         let client = reqwest::blocking::Client::new();
-        let save_url = format!("{}v1/trove", self.config.sync_server_url.clone().unwrap());
+        let save_url = format!("{}v1/trove", self.sync_server_url());
         let body = client
             .get(save_url)
-            .bearer_auth(token.unwrap())
+            .bearer_auth(token)
             .header("Content-Type", "text/plain")
-            .send()
-            .unwrap();
-        if body.status() == 200 {
-            // Replaced escaped new line char with byte code for linebreak
-            let escaped_string = body.text().unwrap().replace("\\n", "\x0A");
-            // Replace escaped " with unescaped version
-            let unescaped_string = escaped_string.replace("\\\"", "\"");
-            return Some(Trove::load_trove_from_string(rem_first_and_last(
-                &unescaped_string,
-            )));
+            .send()?;
+        if body.status() == StatusCode::OK {
+            // The server wraps the trove YAML in a JSON string
+            let escaped_string = body.text()?.replace("\\n", "\n").replace("\\\"", "\"");
+            return Trove::from_yaml_str(rem_first_and_last(&escaped_string)).map(Some);
         }
-        None
+        Ok(None)
     }
 
-    fn sync_safe(&self) {
+    fn sync_safe(&self) -> Result<()> {
         println!("Uploading trove...");
-        let token = self.config.api_token.clone();
+        let token = self
+            .config
+            .api_token
+            .as_deref()
+            .context("No API token set, please log in")?;
         let client = reqwest::blocking::Client::new();
-        let save_url = format!("{}v1/trove", self.config.sync_server_url.clone().unwrap());
-        let trove_file = fs::read_to_string(self.config.trove_path.clone().unwrap()).unwrap();
+        let save_url = format!("{}v1/trove", self.sync_server_url());
+        let trove_yaml = self.trove.to_yaml();
         let body = client
             .put(save_url)
-            .body(trove_file)
-            .bearer_auth(token.unwrap())
+            .body(trove_yaml)
+            .bearer_auth(token)
             .header("Content-Type", "text/plain")
-            .send()
-            .unwrap();
-        if body.status() == 201 {
+            .send()?;
+        if body.status() == StatusCode::CREATED {
             println!("Done!");
         } else {
             println!("Could not save trove. Is it a valid trove file?");
-            println!("{}", body.text().unwrap());
+            println!("{}", body.text()?);
         }
+        Ok(())
     }
 
-    pub fn sync(&mut self, command: Mode) {
-        // Check if user is logged in
-        // Else inform the user to run `hoard sync login` first and break
+    pub fn sync(&mut self, command: Mode) -> Result<()> {
         match command {
-            Mode::Register => self.register_user(),
+            Mode::Register => self.register_user()?,
             Mode::Login => {
                 if self.is_logged_in() {
                     println!("You are already logged in.");
-                    return;
+                } else {
+                    self.login()?;
                 }
-                self.login();
             }
             Mode::Logout => {
                 println!("Logging out..");
                 self.config.api_token = None;
-                save_hoard_config_file(
-                    &self.config.clone(),
-                    &self.config.config_home_path.clone().unwrap(),
-                )
-                .unwrap();
+                let config_path = self
+                    .config
+                    .config_home_path
+                    .as_deref()
+                    .context("config home path is not configured")?;
+                save_hoard_config_file(&self.config, config_path)?;
             }
             Mode::Save => {
                 if !self.is_logged_in() {
-                    println!("Please log in [hoard sync login] or register an account [hoard sync register] to use the sync feature!");
-                    return;
+                    println!(
+                        "Please log in [hoard sync login] or register an account [hoard sync register] to use the sync feature!"
+                    );
+                    return Ok(());
                 }
-                self.sync_safe();
+                self.sync_safe()?;
             }
             Mode::Get => {
-                // `hoard sync` is run
-                // Pull trove
                 if !self.is_logged_in() {
-                    println!("Please log in [hoard sync login] or register an account [hoard sync register] to use the sync feature!");
-                    return;
+                    println!(
+                        "Please log in [hoard sync login] or register an account [hoard sync register] to use the sync feature!"
+                    );
+                    return Ok(());
                 }
-                let trove = self.get_trove_file();
-                if let Some(t) = trove {
-                    // Prepare backup trove to enable reverting if merge goes all wrong, or user incorrectly removes commands they wanted to keep
-                    self.save_backup_trove(None);
-                    let was_dirty = self.trove.merge_trove(&t);
-                    if was_dirty {
-                        self.save_trove(None);
+                // Pull trove and merge. A backup is kept to allow reverting if
+                // the merge goes wrong or commands are removed by accident.
+                if let Some(trove) = self.get_trove_file()? {
+                    self.backup_trove()?;
+                    if self.trove.merge_trove(&trove) {
+                        self.persist()?;
                         println!("All done!");
-                        return;
+                    } else {
+                        println!("No changes");
                     }
-                    println!("No changes");
                 } else {
                     println!("Could not fetch trove file from your account!");
                 }
             }
-            Mode::Revert => {
-                self.revert_trove();
-            }
+            Mode::Revert => self.revert_trove()?,
         }
+        Ok(())
     }
 
     const fn is_logged_in(&self) -> bool {
         self.config.api_token.is_some()
     }
-}
-
-#[tokio::main]
-async fn reqwest_trove(url: Url) -> Result<String, Box<dyn std::error::Error>> {
-    let resp = reqwest::get(url).await?.text().await?;
-    Ok(resp)
 }

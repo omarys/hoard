@@ -1,17 +1,23 @@
-use crate::core::parameters::Parameterized;
 use crate::core::HoardCmd;
+use crate::core::parameters::Parameterized;
 use crate::gui::commands_gui::State;
-use termion::event::Key;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-pub fn key_handler(input: Key, app: &mut State) -> Option<HoardCmd> {
-    match input {
-        // Quit command
-        Key::Esc | Key::Ctrl('c' | 'd' | 'g') => {
+pub fn key_handler(input: KeyEvent, app: &mut State) -> Option<HoardCmd> {
+    let ctrl = input.modifiers.contains(KeyModifiers::CONTROL);
+    match input.code {
+        // Quit program
+        KeyCode::Esc | KeyCode::Char('c' | 'd' | 'g') if ctrl => {
             app.should_exit = true;
             None
         }
-        Key::Char('\n') => {
-            let command = app.selected_command.clone().unwrap();
+        KeyCode::Esc => {
+            app.should_exit = true;
+            None
+        }
+        // Confirm parameter for the next one
+        KeyCode::Enter | KeyCode::Char('\r') => {
+            let command = app.selected_command.clone()?;
             let parameter = app.input.clone();
             let replaced_command = command.replace_parameter(
                 &app.parameter_token,
@@ -27,11 +33,11 @@ pub fn key_handler(input: Key, app: &mut State) -> Option<HoardCmd> {
             None
         }
         // Handle query input
-        Key::Backspace => {
+        KeyCode::Backspace => {
             app.input.pop();
             None
         }
-        Key::Char(c) => {
+        KeyCode::Char(c) => {
             app.input.push(c);
             None
         }

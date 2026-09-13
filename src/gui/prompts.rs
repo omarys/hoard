@@ -21,7 +21,7 @@ where
     if matches!(prompt_yes_or_no(question), Confirmation::Yes) {
         let selected_indices = MultiSelect::with_theme(&HoardTheme::default())
             .with_prompt(selection_prompt)
-            .items(&options_texts)
+            .items(options_texts)
             .interact()
             .unwrap();
 
@@ -36,7 +36,7 @@ pub fn prompt_yes_or_no(text: &str) -> Confirmation {
 
     let answer = Select::with_theme(&HoardTheme::default())
         .with_prompt(text)
-        .items(&["Yes", "No"])
+        .items(["Yes", "No"])
         .default(YES_ANSWER)
         .interact()
         .unwrap();
@@ -51,7 +51,7 @@ pub fn prompt_yes_or_no(text: &str) -> Confirmation {
 pub fn prompt_select_with_options(text_prompt: &str, options: &[&str]) -> usize {
     Select::with_theme(&HoardTheme::default())
         .with_prompt(text_prompt)
-        .items(options)
+        .items(options.iter().copied())
         .default(0)
         .interact()
         .unwrap()
@@ -77,17 +77,16 @@ where
     F: FnMut(&String) -> Result<(), String>,
 {
     let theme = HoardTheme::default();
-    let mut input: Input<String> = Input::with_theme(&theme);
+    let mut input = Input::with_theme(&theme).with_prompt(text);
     // Add default value to input prompt
     if let Some(val) = default_value {
-        input.default(val);
+        input = input.default(val);
     }
     // Add validator if any
     if let Some(val) = validator {
-        input.validate_with(val);
+        input = input.validate_with(val);
     }
-    input.allow_empty(allow_empty);
-    input.with_prompt(text).interact_text().unwrap()
+    input.allow_empty(allow_empty).interact_text().unwrap()
 }
 
 pub fn prompt_password_repeat(text: &str) -> String {
