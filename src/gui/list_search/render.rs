@@ -1,5 +1,5 @@
 use crate::config::HoardConfig;
-use crate::core::HoardCmd;
+use crate::core::{CommandKind, HoardCmd};
 use crate::gui::commands_gui::State;
 use crate::gui::commands_gui::{ControlState, EditSelection};
 use crate::gui::help::HELP_KEY;
@@ -99,10 +99,18 @@ pub fn draw(
         );
 
         let (tags, description, command) = detail_widgets(app_state, config);
+        let is_python = app_state
+            .commands
+            .get(app_state.command_list.selected().unwrap_or(0))
+            .is_some_and(|command| command.kind == CommandKind::Python);
         let detail_chunks = Layout::vertical([
             Constraint::Length(3), // tags
             Constraint::Min(2),    // description
-            Constraint::Length(3), // hoarded command
+            if is_python {
+                Constraint::Percentage(60)
+            } else {
+                Constraint::Length(3)
+            },
         ])
         .split(detail_area);
         rect.render_widget(tags, detail_chunks[0]);
@@ -257,7 +265,12 @@ fn detail_widgets<'a>(
     );
 
     let title = format!(
-        " Hoarded command --- Times selected: {} ",
+        " {} | Times selected: {} ",
+        if selected.kind == CommandKind::Python {
+            "Python script"
+        } else {
+            "Hoarded command"
+        },
         selected.usage_count
     );
     let command = Paragraph::new(coerce_string_by_mode(
@@ -267,7 +280,9 @@ fn detail_widgets<'a>(
     ))
     .style(primary_style(config))
     .alignment(Alignment::Left)
-    .wrap(Wrap { trim: true })
+    .wrap(Wrap {
+        trim: selected.kind != CommandKind::Python,
+    })
     .block(
         Block::default()
             .borders(Borders::ALL)

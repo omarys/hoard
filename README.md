@@ -31,6 +31,9 @@
 
 ## ✨ What's new
 
+- Archive Python files with `hoard new --script FILE -n NAME -d SUMMARY`.
+  Source and descriptions stay in the trove. Use `hoard pick -n NAME --raw`
+  to recover the original source, or select an entry for a Python 3 invocation.
 - 💾 Commands are stored in a **SQLite database** (`trove.db`) instead of a YAML file —
   faster writes, single-row updates, WAL journaling. Legacy `trove.yml` files are
   imported automatically on first run; YAML remains only for import/export and sync.
@@ -187,6 +190,66 @@ Alternatively you can determine where the named parameter ends by putting a `!` 
 ```
 echo "My name is #first named parameter! and I live at #city. Did I tell you my name, #first?"
 ```
+#### Save a Python script
+
+```sh
+hoard new --script ./summarize-jsonl.py \
+  --name summarize-jsonl \
+  --namespace data \
+  --tags python,jsonl,report \
+  --description "Summarize event counts from a JSONL log. Takes a file path and prints a JSON report. Requires Python 3."
+```
+
+After initial Hoard setup, this saves without prompts. `--name` and a nonblank
+`--description` are required. `--summary` is an alias for `--description`.
+The namespace defaults to your configured default, and tags are optional.
+`--script` and `--command` cannot be combined. An existing entry with the same
+name and namespace is rejected rather than overwritten.
+
+Hoard copies the entire UTF-8 source into SQLite with `kind: python`, preserving
+indentation, comments, quotes and trailing newlines. It does not keep a reference
+to the original file, execute it, check Python syntax, or install dependencies.
+Include a purpose summary, inputs, outputs, dependencies and any destructive
+effects in the description. Only the script itself is archived, not sibling
+modules, data files or virtual environments.
+
+Validate syntax without running the script before saving:
+
+```sh
+python3 -c 'import pathlib, sys; p = pathlib.Path(sys.argv[1]); compile(p.read_bytes(), str(p), "exec")' ./summarize-jsonl.py
+```
+
+Python comments and strings are never treated as Hoard parameters, even with a
+custom token. Use `argparse`, `sys.argv` or environment variables for inputs
+instead of inserting `#parameter!` placeholders into Python source.
+
+Inspect or restore the exact source:
+
+```sh
+hoard pick --name summarize-jsonl --raw
+# Choose a destination that does not already exist.
+hoard pick --name summarize-jsonl --raw > ./summarize-jsonl.saved.py
+```
+
+Inspect the summary and source together with
+`hoard list --json --filter summarize-jsonl`. Despite the flag name, this fork's
+structured output is YAML. `hoard list --simple` and the interactive list also
+show descriptions.
+
+Selecting a Python entry in the shell plugin, or using `hoard pick -n NAME`
+without `--raw`, prints a single-line `python3 -c` invocation. Hoard does not run
+it. The invocation encodes the source to preserve quoting across Bash, Zsh and
+Fish. You can append arguments, and stdin remains available to the script.
+For large scripts that exceed command-line size limits, or scripts that depend
+on `__file__`, restore a `.py` file with `--raw` and run that file instead.
+
+`hoard edit --name summarize-jsonl` opens the source in `$VISUAL` or `$EDITOR`,
+then prompts for its description and tags. SQLite backups and YAML
+import/export preserve the script kind and summary. Existing entries without a
+kind remain shell commands. Use this updated fork on each machine that reads
+Python entries; older clients do not understand the Python kind and may lose it
+when saving. Cloud sync with older servers has not been verified.
+
 #### Search through command trove
 
 ```
@@ -221,7 +284,27 @@ Or for a permanent solution set `gpt_api_key` in your `~/.config/hoard/config.ym
 chatGPT does not always reply in the same format. Sometimes the resulting command will be added to the description. Use the edit mode `<TAB>/<Ctrl-E>` to edit the hoarded command to its correct form.
 
 #### Synchronize commands with another terminal
-You can keep your commands in sync in multiple terminals by using `hoard sync`
+
+For a private, reviewable archive, keep a YAML export in a private Git repository. This fork preserves shell commands, Python source, entry kinds, descriptions, and tags in the export:
+
+```sh
+# On the source system. Despite the flag name, structured output is YAML.
+hoard list --json > trove.yml
+git add trove.yml
+git commit -m "Update Hoard entries"
+git push
+```
+
+Inspect the export for credentials and other sensitive values before committing it. On another system:
+
+```sh
+git pull
+hoard import --uri ./trove.yml
+```
+
+Prefer one system writing the export at a time. YAML is text, so changes can be reviewed and merged. Do not track `trove.db` in Git: SQLite is binary, produces poor diffs and merges, and may have uncheckpointed data in `trove.db-wal`. Copying a stopped Hoard database is suitable for a one-time migration, but YAML is the better format for ongoing source-controlled synchronization.
+
+You can alternatively keep your commands in sync using `hoard sync`. Compatibility between older sync clients or servers and Python script entries has not been verified.
 
 First register a new account
 ```bash

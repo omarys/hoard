@@ -1,8 +1,8 @@
 use crate::config::HoardConfig;
-use crate::core::HoardCmd;
 use crate::core::error::HoardError;
 use crate::core::parameters::Parameterized;
-use anyhow::{Context, Result, anyhow};
+use crate::core::{CommandKind, HoardCmd};
+use anyhow::{Context, Result, anyhow, ensure};
 use comfy_table::{Attribute, Cell, Color, Table, presets::UTF8_FULL};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -60,6 +60,13 @@ impl Trove {
     pub fn from_yaml_str(trove_string: &str) -> Result<Self> {
         let mut trove: Trove = serde_yaml::from_str(trove_string)
             .with_context(|| "The supplied trove file is invalid".to_string())?;
+        for command in &trove.commands {
+            ensure!(
+                command.kind != CommandKind::Python || command.is_valid(),
+                "Invalid Python entry '{}': source, name, namespace and description are required",
+                command.name
+            );
+        }
         trove.refresh_namespaces();
         Ok(trove)
     }
@@ -102,14 +109,9 @@ impl Trove {
         commands
     }
 
-    /// Check whether a command with the same name, namespace and command
-    /// string is already in the collection.
+    /// Check whether the entry, including its description and kind, is already saved.
     fn is_command_present(&self, command: &HoardCmd) -> bool {
-        self.commands.iter().any(|c| {
-            c.namespace == command.namespace
-                && c.name == command.name
-                && c.command == command.command
-        })
+        self.commands.contains(command)
     }
 
     /// Add a command to the trove collection.
@@ -207,14 +209,17 @@ impl Trove {
         namespaces
     }
 
-    /// Look up a command by name and prompt for its parameter values.
-    pub fn pick_command(&self, config: &HoardConfig, name: &str) -> Result<HoardCmd> {
-        let command = self
-            .commands
+    /// Look up the archived entry without interpreting its source.
+    pub fn find_command(&self, name: &str) -> Result<&HoardCmd> {
+        self.commands
             .iter()
             .find(|c| c.name == name)
-            .ok_or_else(|| anyhow!("No matching command found with name: {name}"))?;
-        Ok(command.clone().with_input_parameters(
+            .ok_or_else(|| anyhow!("No matching command found with name: {name}"))
+    }
+
+    /// Look up a command by name and prompt for its parameter values.
+    pub fn pick_command(&self, config: &HoardConfig, name: &str) -> Result<HoardCmd> {
+        Ok(self.find_command(name)?.clone().with_input_parameters(
             config
                 .parameter_token
                 .as_deref()
@@ -227,12 +232,15 @@ impl Trove {
     }
 
     /// Replace a command in place and refresh its `last_used` timestamp.
-    pub fn update_command_by_name(&mut self, command: &HoardCmd) -> &mut Self {
+    pub fn update_command_by_name(&mut self, command: &HoardCmd) -> Result<&mut Self, HoardError> {
+        if !command.is_valid() {
+            return Err(HoardError::InvalidCommandForSave);
+        }
         if let Some(existing) = self.commands.iter_mut().find(|c| c.name == command.name) {
             *existing = command.clone();
             existing.mut_update_last_used();
         }
-        self
+        Ok(self)
     }
 
     /// Check if the trove collection is empty.
@@ -244,11 +252,11 @@ impl Trove {
     ///
     /// Returns `true` when at least one command changed in this trove.
     pub fn merge_trove(&mut self, other: &Self) -> bool {
-        other
-            .commands
-            .iter()
-            .map(|c| self.add_command(c.clone(), true))
-            .any(|result| result.is_ok())
+        let mut changed = false;
+        for command in &other.commands {
+            changed |= self.add_command(command.clone(), true).unwrap_or(false);
+        }
+        changed
     }
 
     /// Print the trove as a table to stdout.
@@ -256,13 +264,21 @@ impl Trove {
         let mut table = Table::new();
         table.load_style(UTF8_FULL);
         table.force_no_tty();
-        table.set_header(["Name", "namespace", "command", "description", "tags"]);
+        table.set_header([
+            "Name",
+            "namespace",
+            "kind",
+            "command",
+            "description",
+            "tags",
+        ]);
         for command in &self.commands {
             table.add_row(vec![
                 Cell::new(&command.name)
                     .fg(Color::Green)
                     .add_attribute(Attribute::Bold),
                 Cell::new(&command.namespace),
+                Cell::new(command.kind.as_str()),
                 Cell::new(&command.command),
                 Cell::new(&command.description),
                 Cell::new(command.get_tags_as_string()),
@@ -282,6 +298,36 @@ mod test_commands {
             .with_name(name)
             .with_namespace(namespace)
             .with_command(command)
+    }
+
+    #[test]
+    fn merge_preserves_all_entries_and_updates_summary_and_kind() {
+        let original = command("script", "default", "print('hello')");
+        let mut python = original.clone();
+        python.kind = CommandKind::Python;
+        python.description = "Print a greeting.".into();
+        let incoming = Trove::from_commands(&[python, command("shell", "default", "echo hello")]);
+        let mut trove = Trove::from_commands(&[original]);
+        assert!(trove.merge_trove(&incoming));
+        assert_eq!(trove.commands, incoming.commands);
+        assert!(!trove.merge_trove(&incoming));
+        let mut updated = incoming.commands[0].clone();
+        updated.description = "Print a useful greeting.".into();
+        assert!(trove.add_command(updated.clone(), true).unwrap());
+        assert_eq!(trove.find_command("script").unwrap(), &updated);
+    }
+
+    #[test]
+    fn script_edits_and_imports_require_a_description() {
+        let mut script = command("script", "default", "print('hello')");
+        script.kind = CommandKind::Python;
+        script.description = "Print a greeting.".into();
+        let mut trove = Trove::from_commands(&[script.clone()]);
+        script.description = " \t\n".into();
+        assert!(trove.update_command_by_name(&script).is_err());
+        assert_eq!(trove.commands[0].description, "Print a greeting.");
+        let invalid = Trove::from_commands(&[script]).to_yaml();
+        assert!(Trove::from_yaml_str(&invalid).is_err());
     }
 
     #[test]

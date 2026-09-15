@@ -10,8 +10,8 @@
 //! timestamps are unix seconds. A fresh database transparently imports a
 //! legacy `trove.yml` sitting next to it so existing users keep their data.
 
-use crate::core::HoardCmd;
-use anyhow::{Context, Result};
+use crate::core::{CommandKind, HoardCmd};
+use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, Row, backup::Backup, params};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -21,7 +21,7 @@ pub const TROVE_DB: &str = "trove.db";
 /// Legacy YAML trove file. Imported once when a new database is created.
 pub const LEGACY_TROVE_FILE: &str = "trove.yml";
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS commands (
@@ -46,8 +46,8 @@ const INSERT_SQL: &str = "
 INSERT INTO commands (
     name, namespace, command, description, tags,
     created, modified, last_used, usage_count,
-    is_favorite, is_hidden, is_deleted
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+    is_favorite, is_hidden, is_deleted, kind
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
 ";
 
 /// A connection to the trove database.
@@ -93,6 +93,11 @@ impl Db {
         {
             let mut stmt = tx.prepare_cached(INSERT_SQL)?;
             for command in commands {
+                ensure!(
+                    command.kind != CommandKind::Python || command.is_valid(),
+                    "Invalid Python entry '{}': source, name, namespace and description are required",
+                    command.name
+                );
                 stmt.execute(params![
                     command.name,
                     command.namespace,
@@ -106,6 +111,7 @@ impl Db {
                     i64::from(command.is_favorite),
                     i64::from(command.is_hidden),
                     i64::from(command.is_deleted),
+                    command.kind.as_str(),
                 ])?;
             }
         }
@@ -150,9 +156,21 @@ pub fn local_trove_exists() -> bool {
 
 fn migrate(conn: &Connection) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    ensure!(
+        version <= SCHEMA_VERSION,
+        "Trove database was created by a newer Hoard version"
+    );
     if version < SCHEMA_VERSION {
-        conn.execute_batch(SCHEMA)?;
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        let tx = conn.unchecked_transaction()?;
+        if version < 1 {
+            tx.execute_batch(SCHEMA)?;
+        }
+        tx.execute_batch(
+            "ALTER TABLE commands ADD COLUMN kind TEXT NOT NULL DEFAULT 'shell'
+             CHECK (kind IN ('shell', 'python'));",
+        )?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.commit()?;
     }
     Ok(())
 }
@@ -162,6 +180,11 @@ fn row_to_command(row: &Row) -> rusqlite::Result<HoardCmd> {
     Ok(HoardCmd {
         name: row.get("name")?,
         command: row.get("command")?,
+        kind: match row.get::<_, String>("kind")?.as_str() {
+            "shell" => CommandKind::Shell,
+            "python" => CommandKind::Python,
+            _ => return Err(rusqlite::Error::InvalidQuery),
+        },
         description: row.get("description")?,
         tags: tags
             .split(',')
@@ -211,6 +234,45 @@ mod tests {
         ];
         db.sync(&commands).unwrap();
         assert_eq!(db.commands().unwrap(), commands);
+    }
+
+    #[test]
+    fn migrates_version_one_without_changing_existing_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(TROVE_DB);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(
+            "INSERT INTO commands (name, namespace, command, description, created, modified, last_used)
+             VALUES ('legacy', 'shell', 'echo legacy', 'Keep this summary', 100, 100, 100);
+             PRAGMA user_version = 1;",
+        ).unwrap();
+        drop(conn);
+        let db = Db::open(&path).unwrap();
+        let mut commands = db.commands().unwrap();
+        assert_eq!(commands[0].kind, CommandKind::Shell);
+        assert_eq!(commands[0].command, "echo legacy");
+        assert_eq!(commands[0].description, "Keep this summary");
+        let mut script = command("python", "scripts", "# comment\nprint('hello')\n\n");
+        script.kind = CommandKind::Python;
+        script.description = "Print a greeting.".into();
+        commands.push(script);
+        db.sync(&commands).unwrap();
+        drop(db);
+        assert_eq!(Db::open(&path).unwrap().commands().unwrap(), commands);
+    }
+
+    #[test]
+    fn invalid_script_does_not_replace_existing_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join(TROVE_DB)).unwrap();
+        let original = vec![command("shell", "default", "echo keep")];
+        db.sync(&original).unwrap();
+        let mut script = command("python", "scripts", "print('hello')");
+        script.kind = CommandKind::Python;
+        script.description = " \t\n".into();
+        assert!(db.sync(&[script]).is_err());
+        assert_eq!(db.commands().unwrap(), original);
     }
 
     #[test]

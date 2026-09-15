@@ -5,6 +5,7 @@ pub mod trove;
 use crate::core::error::HoardError;
 use crate::core::trove::Trove;
 use crate::gui::prompts::{prompt_input, prompt_input_validate, prompt_select_with_options};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rand::RngExt;
 use rand::distr::Alphanumeric;
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,25 @@ fn default_time() -> time::SystemTime {
     time::SystemTime::now()
 }
 
-/// Storage for a single saved command.
+/// How the stored source is interpreted. Legacy entries are shell commands.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CommandKind {
+    #[default]
+    Shell,
+    Python,
+}
+
+impl CommandKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Shell => "shell",
+            Self::Python => "python",
+        }
+    }
+}
+
+/// Storage for a single saved command or Python script.
 ///
 /// A `HoardCmd` stores the following parameters:
 /// - `name`: The name of the command by which it is referenced
@@ -34,8 +53,12 @@ pub struct HoardCmd {
     /// The name of the command by which it is referenced
     pub name: String,
 
-    /// The terminal command to be stored and executed
+    /// The shell command or complete Python source, preserved verbatim
     pub command: String,
+
+    /// The language of the stored source
+    #[serde(default)]
+    pub kind: CommandKind,
 
     /// A description of the command for the user
     pub description: String,
@@ -82,6 +105,7 @@ impl PartialEq for HoardCmd {
         self.name == other.name
             && self.namespace == other.namespace
             && self.command == other.command
+            && self.kind == other.kind
             && self.description == other.description
             && self.tags == other.tags
     }
@@ -93,6 +117,7 @@ impl HoardCmd {
         Self {
             name: String::new(),
             command: String::new(),
+            kind: CommandKind::Shell,
             description: String::new(),
             tags: Vec::new(),
             created: time::SystemTime::now(),
@@ -132,10 +157,25 @@ impl HoardCmd {
         }
     }
 
+    /// Return a shell invocation without changing the archived source.
+    pub fn shell_command(&self) -> String {
+        match self.kind {
+            CommandKind::Shell => self.command.clone(),
+            CommandKind::Python => {
+                // Base64 keeps multiline source and quoting intact in Bash, Zsh and Fish.
+                // ponytail: argv size limits apply; use pick --raw to restore large scripts.
+                let source = STANDARD.encode(self.command.as_bytes());
+                format!(
+                    "python3 -c 'import base64; exec(compile(base64.b64decode(\"{source}\"), \"<hoard>\", \"exec\"))'"
+                )
+            }
+        }
+    }
+
     /// Check if a command is valid for saving.
-    /// A valid command cannot be an empty string.
+    /// A valid command cannot be blank or contain NUL bytes.
     pub fn is_command_valid(command: &str) -> Result<(), HoardError> {
-        if command.is_empty() {
+        if command.trim().is_empty() || command.contains('\0') {
             return Err(HoardError::InvalidCommand);
         }
         Ok(())
@@ -148,9 +188,10 @@ impl HoardCmd {
     /// - A namespace that is not empty
     /// - `created/modified/last_used` that is not the `UNIX_EPOCH`
     pub fn is_valid(&self) -> bool {
-        !self.name.is_empty()
-            && !self.command.is_empty()
-            && !self.namespace.is_empty()
+        Self::is_name_valid(&self.name).is_ok()
+            && Self::is_command_valid(&self.command).is_ok()
+            && !self.namespace.trim().is_empty()
+            && (self.kind != CommandKind::Python || !self.description.trim().is_empty())
             && self.created != time::UNIX_EPOCH
             && self.modified != time::UNIX_EPOCH
             && self.last_used != time::UNIX_EPOCH
@@ -162,7 +203,7 @@ impl HoardCmd {
         if name.is_empty() {
             return Err(HoardError::EmptyName);
         }
-        if name.contains(' ') {
+        if name.chars().any(char::is_whitespace) {
             return Err(HoardError::NameWithWhitespace);
         }
         Ok(())

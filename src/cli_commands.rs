@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -32,7 +33,7 @@ pub enum Commands {
     /// Shows setting file paths
     Info {},
 
-    /// Save a new command
+    /// Save a new shell command or Python script
     New {
         /// [Optional] Name of the new command
         #[arg(short = 'n', long, value_name = "NAME")]
@@ -46,8 +47,16 @@ pub enum Commands {
         #[arg(short = 'c', long, value_name = "COMMAND")]
         command: Option<String>,
 
-        /// [Optional] Description of what the command does
-        #[arg(short = 'd', long, value_name = "DESCRIPTION")]
+        /// Archive a UTF-8 Python file without prompts; requires name and description
+        #[arg(long, value_name = "FILE", conflicts_with = "command", requires_all = ["name", "description"])]
+        script: Option<PathBuf>,
+
+        /// Namespace for the entry; scripts default to the configured namespace
+        #[arg(long, value_name = "NAMESPACE")]
+        namespace: Option<String>,
+
+        /// Description/summary of the entry; required for Python scripts
+        #[arg(short = 'd', long, alias = "summary", value_name = "DESCRIPTION")]
         description: Option<String>,
     },
 
@@ -66,11 +75,15 @@ pub enum Commands {
         simple: bool,
     },
 
-    /// Pick a command of the trove and print it
+    /// Print a shell invocation for a saved command or Python script
     Pick {
-        /// Name of the command to print
+        /// Name of the entry to print
         #[arg(short = 'n', long)]
         name: String,
+
+        /// Print the exact stored source without a wrapper or parameter prompts
+        #[arg(long)]
+        raw: bool,
     },
 
     /// Set a custom parameter token

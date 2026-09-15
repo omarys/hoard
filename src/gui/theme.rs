@@ -380,13 +380,7 @@ impl Theme for HoardTheme {
             )
         } else {
             let cursor = self.fuzzy_cursor_style.apply_to(" ");
-            write!(
-                f,
-                "{} {}{}",
-                self.prompt_suffix,
-                search_term.to_string(),
-                cursor
-            )
+            write!(f, "{} {}{}", self.prompt_suffix, search_term, cursor)
         }
     }
 }

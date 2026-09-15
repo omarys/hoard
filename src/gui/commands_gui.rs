@@ -275,7 +275,7 @@ fn run_app(
                     app_state.draw = DrawState::Search;
                 } else if app_state.control == ControlState::Edit {
                     // Command has been edited
-                    trove.update_command_by_name(&output);
+                    trove.update_command_by_name(&output)?;
                     app_state.commands = trove.commands.clone();
                     app_state
                         .commands

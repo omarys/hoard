@@ -15,12 +15,18 @@ mod theme;
 mod util;
 
 use anyhow::Result;
+use clap::Parser;
+use cli_commands::Cli;
 use hoard::Hoard;
 
 fn main() -> Result<()> {
+    let cli = Cli::parse();
     let mut hoard = Hoard::load(None)?;
-    let (command, is_autocomplete) = hoard.start()?;
+    let (command, is_autocomplete) = hoard.start(cli)?;
     let output = command.trim();
+    if output.is_empty() {
+        return Ok(());
+    }
     if is_autocomplete {
         eprintln!("{output}");
     } else {

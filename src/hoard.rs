@@ -3,8 +3,8 @@ use crate::config::defaults;
 use crate::config::{
     HoardConfig, load_or_build_config, save_hoard_config_file, save_parameter_token,
 };
-use crate::core::HoardCmd;
 use crate::core::trove::Trove;
+use crate::core::{CommandKind, HoardCmd};
 use crate::filter::query_trove;
 use crate::gui::commands_gui;
 use crate::gui::prompts::{
@@ -14,14 +14,14 @@ use crate::gui::prompts::{
 use crate::store::Db;
 use crate::sync_models::TokenResponse;
 use crate::util::rem_first_and_last;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use base64::Engine as _;
 use base64::engine::general_purpose;
-use clap::Parser;
 use dotenvy::dotenv;
 use reqwest::StatusCode;
 use reqwest::Url;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 /// The hoard application: configuration, the in-memory trove and its
 /// SQLite-backed persistence.
@@ -47,8 +47,7 @@ impl Hoard {
 
     /// Runs the parsed CLI command and returns the selected command string
     /// (if any) together with whether it is meant for shell autocomplete.
-    pub fn start(&mut self) -> Result<(String, bool)> {
-        let cli = Cli::parse();
+    pub fn start(&mut self, cli: Cli) -> Result<(String, bool)> {
         let mut autocomplete_command = String::new();
 
         match cli.command {
@@ -58,7 +57,9 @@ impl Hoard {
                 tags,
                 command,
                 description,
-            } => self.new_command(name, tags, command, description)?,
+                script,
+                namespace,
+            } => self.new_command(name, tags, command, description, script, namespace)?,
             Commands::List {
                 filter,
                 json,
@@ -68,7 +69,7 @@ impl Hoard {
                     .list_commands(simple, json, filter)?
                     .unwrap_or_default()
             }
-            Commands::Pick { name } => self.pick_command(&name)?,
+            Commands::Pick { name, raw } => self.pick_command(&name, raw)?,
             Commands::Remove { name } => self.remove_command(&name)?,
             Commands::RemoveNamespace { namespace } => self.remove_namespace(&namespace)?,
             Commands::SetParameterToken { name } => self.set_parameter_token(&name)?,
@@ -127,18 +128,51 @@ impl Hoard {
         tags: Option<String>,
         command: Option<String>,
         description: Option<String>,
+        script: Option<PathBuf>,
+        namespace: Option<String>,
     ) -> Result<()> {
+        if let Some(path) = script {
+            let name = name.context("Python scripts require --name")?;
+            let description = description.context("Python scripts require --description")?;
+            ensure!(
+                !description.trim().is_empty(),
+                "Python scripts require a non-empty description/summary"
+            );
+            HoardCmd::is_name_valid(&name)?;
+            let source = std::fs::read_to_string(&path)
+                .with_context(|| format!("Could not read Python script {}", path.display()))?;
+            HoardCmd::is_command_valid(&source)?;
+            let entry = HoardCmd {
+                name,
+                command: source,
+                kind: CommandKind::Python,
+                description,
+                namespace: namespace.unwrap_or_else(|| self.config.default_namespace.clone()),
+                ..HoardCmd::default().with_tags_raw(&tags.unwrap_or_default())
+            };
+            ensure!(
+                self.trove.get_command_collision(&entry).is_none(),
+                "An entry named '{}' already exists in namespace '{}'",
+                entry.name,
+                entry.namespace
+            );
+            self.trove.add_command(entry, false)?;
+            return self.persist();
+        }
+
         let trove_namespaces = self.trove.namespaces();
-        let new_command = HoardCmd::default()
-            .with_command_string_input(
-                command,
-                self.parameter_token(),
-                self.parameter_ending_token(),
-            )
-            .with_namespace_input(&trove_namespaces)
-            .with_name_input(name, &self.trove)
-            .with_description_input(description.unwrap_or_default())
-            .with_tags_input(tags);
+        let new_command = HoardCmd::default().with_command_string_input(
+            command,
+            self.parameter_token(),
+            self.parameter_ending_token(),
+        );
+        let new_command = match namespace {
+            Some(namespace) => new_command.with_namespace(&namespace),
+            None => new_command.with_namespace_input(&trove_namespaces),
+        }
+        .with_name_input(name, &self.trove)
+        .with_description_input(description.unwrap_or_default())
+        .with_tags_input(tags);
         self.trove.add_command(new_command, true)?;
         self.persist()
     }
@@ -165,7 +199,7 @@ impl Hoard {
                     if let Some(command) = selected_command
                         && !command.command.is_empty()
                     {
-                        return Ok(Some(command.command));
+                        return Ok(Some(command.shell_command()));
                     }
                 }
                 Err(err) => println!("{err}"),
@@ -174,9 +208,16 @@ impl Hoard {
         Ok(None)
     }
 
-    fn pick_command(&self, name: &str) -> Result<()> {
-        let command = self.trove.pick_command(&self.config, name)?;
-        println!("{}", command.command);
+    fn pick_command(&self, name: &str, raw: bool) -> Result<()> {
+        if raw {
+            let command = self.trove.find_command(name)?;
+            std::io::stdout()
+                .lock()
+                .write_all(command.command.as_bytes())?;
+        } else {
+            let command = self.trove.pick_command(&self.config, name)?;
+            println!("{}", command.shell_command());
+        }
         Ok(())
     }
 
@@ -260,7 +301,25 @@ impl Hoard {
 
     fn edit_command(&mut self, command_name: &str) -> Result<()> {
         println!("Editing {command_name}");
-        let command_to_edit = self.trove.pick_command(&self.config, command_name);
+        let command_to_edit = self.trove.find_command(command_name).cloned();
+        if let Ok(command) = &command_to_edit
+            && command.kind == CommandKind::Python
+        {
+            let Some(source) = dialoguer::Editor::new()
+                .extension(".py")
+                .trim_newlines(false)
+                .edit(&command.command)?
+            else {
+                return Ok(());
+            };
+            let edited = command
+                .clone()
+                .with_command(&source)
+                .with_description_input(command.description.clone())
+                .with_tags_input(Some(command.get_tags_as_string()));
+            self.trove.update_command_by_name(&edited)?;
+            return self.persist();
+        }
 
         let trove_namespaces = self.trove.namespaces();
         match command_to_edit {

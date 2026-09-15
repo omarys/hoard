@@ -1,6 +1,6 @@
 use regex::Regex;
 
-use crate::core::HoardCmd;
+use crate::core::{CommandKind, HoardCmd};
 use crate::gui::prompts::prompt_input;
 
 /// Default token marking the start of a named parameter in a command string.
@@ -24,10 +24,16 @@ pub trait Parameterized {
 
 impl Parameterized for HoardCmd {
     fn get_parameter_count(&self, token: &str) -> usize {
+        if self.kind == CommandKind::Python {
+            return 0;
+        }
         self.command.matches(token).count()
     }
 
     fn replace_parameter(&self, start_token: &str, end_token: &str, value: &str) -> Self {
+        if self.kind == CommandKind::Python {
+            return self.clone();
+        }
         let pattern = format!(
             "{}.*?{}",
             regex::escape(start_token),
@@ -59,6 +65,20 @@ impl Parameterized for HoardCmd {
 #[cfg(test)]
 mod test_commands {
     use super::*;
+
+    #[test]
+    fn python_source_is_never_parameterized() {
+        let mut script = HoardCmd {
+            kind: CommandKind::Python,
+            ..HoardCmd::default().with_command("#!/usr/bin/env python3\n#name!\nprint('@value!')")
+        };
+        let original = script.clone();
+        for token in ["#", "@", "print"] {
+            assert_eq!(script.get_parameter_count(token), 0);
+            assert_eq!(script.replace_parameter(token, "!", "changed"), original);
+            assert_eq!(script.with_input_parameters(token, "!"), original);
+        }
+    }
 
     #[test]
     fn test_get_parameter_count() {
