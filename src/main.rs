@@ -10,7 +10,6 @@ mod gpt;
 mod gui;
 mod hoard;
 mod store;
-mod sync_models;
 mod theme;
 mod util;
 

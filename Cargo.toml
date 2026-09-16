@@ -29,7 +29,6 @@ path = "src/main.rs"
 [features]
 # Passthrough for dialoguer's optional Theme methods implemented in `gui::theme`.
 # Only active when compiled with these features, matching upstream gating.
-password = ["dialoguer/password"]
 fuzzy-select = ["dialoguer/fuzzy-select"]
 
 [dependencies]

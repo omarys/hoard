@@ -266,6 +266,11 @@ fn run_app(
             };
 
             if let Some(output) = command {
+                // Secrets must never reach the trove, whatever created the entry.
+                let (output, _redactions) = output.with_redacted_secrets(
+                    config.parameter_tokens().0,
+                    config.parameter_tokens().1,
+                );
                 if app_state.draw == DrawState::Create {
                     let _ = trove.add_command(output, true);
                     app_state.commands = trove.commands.clone();

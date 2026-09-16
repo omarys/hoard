@@ -230,16 +230,6 @@ impl Theme for HoardTheme {
         )
     }
 
-    /// Formats a password prompt after selection.
-    #[cfg(feature = "password")]
-    fn format_password_prompt_selection(
-        &self,
-        f: &mut dyn fmt::Write,
-        prompt: &str,
-    ) -> fmt::Result {
-        self.format_input_prompt_selection(f, prompt, "********")
-    }
-
     /// Formats a multi select prompt after selection.
     fn format_multi_select_prompt_selection(
         &self,

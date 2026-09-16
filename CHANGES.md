@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
+- 🧹 **Removed the `hoard sync` cloud feature** (this fork is local-only): the `sync
+  register/login/logout/save/get/revert` subcommands, the sync client and its server
+  calls, `sync_models.rs`, the `sync_server_url` and `api_token` config keys, the
+  SQLite snapshot taken before `sync get` (`trove.db.bk`), plus what only existed to
+  serve them (password prompts, the `rem_first_and_last` helper, `Db::backup_to` and
+  the `password` cargo feature). Existing `config.yml` files that still carry the sync
+  keys keep working — unknown keys are ignored and dropped on the next config write.
+  Move a trove between machines with a YAML export in Git instead (see README).
+- ✨ `hoard export` is scriptable: `--all` exports the whole trove and
+  `--namespace a,b` a subset, both without the interactive namespace/command
+  multi-selects, and both conflict with each other. The scripted path reports
+  `Exported N entries to PATH` and fails with a non-zero exit for an unknown
+  namespace, an empty selection or an unusable `--path`, where the old code printed
+  `Nothing selected` and exited 0. Interactive `hoard export --path FILE` is
+  unchanged.
+- ✨ `hoard new` is scriptable: passing `--name` makes the save fully non-interactive
+  (`hoard new -n NAME -c COMMAND [-d DESC] [-t TAGS] [--namespace NS]`). Values that
+  are not passed fall back to the configured default namespace and to empty
+  description/tags instead of prompting, an existing name/namespace pair is rejected
+  instead of overwritten, and the entry is confirmed with `Saved [namespace/name]`.
+  `--command` without `--name` still opens the interactive prompts, pre-filled.
+- 🔒 Secrets are redacted before an entry is stored, whatever save path is used
+  (`hoard new`, `hoard edit`, the TUI create/edit views): passwords in URLs and
+  `-u user:pass`, `--password`/`--token`/`--api-key`/`--access-key`/`--secret` flags,
+  `Authorization: Bearer ...` headers, `PASSWORD=`/`token:`-style assignments and query
+  parameters, AWS/GitHub/Slack/OpenAI key shapes, JWTs and PEM private key blocks are
+  replaced by `#password!`-style parameters. The save reports what was replaced (never
+  the value itself). Shell expansions (`$TOKEN`, `$(pass show x)`), existing parameters
+  and Python sources are left untouched, so redaction is idempotent.
+- 🐛 A relative `trove_path` in `config.yml` is resolved against the hoard config
+  directory instead of the current directory, so the global trove is reachable from any
+  working directory again (previously every other directory silently got its own empty
+  `./trove.db`). `trove.yml`/`trove.db` in the current directory still take precedence.
+- 🧪 `tests/cli_new.rs` covers non-interactive saves, redaction, name/tag validation and
+  duplicate rejection; `src/core/secrets.rs` unit-tests every rule, idempotence,
+  deduplication and the Python-source exemption.
 - 💾 Trove storage moved from YAML to a SQLite database (`trove.db`, WAL mode).
   Legacy `trove.yml` files are imported automatically on first run.
 - 🧹 Refactored for idiomatic Rust (edition 2024): proper error types via `thiserror`,

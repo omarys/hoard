@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -12,22 +12,6 @@ pub struct Cli {
     pub command: Commands,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub enum Mode {
-    /// Register new hoard account
-    Register,
-    /// Log into your hoard account
-    Login,
-    /// Log out from your hoard account
-    Logout,
-    /// Push your local trove file to the synchronization server
-    Save,
-    /// Get your online trove file and merge it with your local one
-    Get,
-    /// Revert the last `hoard sync get` command
-    Revert,
-}
-
 #[derive(Subcommand)]
 pub enum Commands {
     /// Shows setting file paths
@@ -35,15 +19,16 @@ pub enum Commands {
 
     /// Save a new shell command or Python script
     New {
-        /// [Optional] Name of the new command
+        /// Name of the new command. Supplying it saves without any prompt, which
+        /// also requires --command
         #[arg(short = 'n', long, value_name = "NAME")]
         name: Option<String>,
 
-        /// [Optional] Supply single word tags for the newly created command, comma separated
+        /// Comma separated single word tags; without --name hoard prompts for them
         #[arg(short = 't', long, value_name = "TAGS")]
         tags: Option<String>,
 
-        /// [Optional] The command to save
+        /// The command to save; omit it to be prompted for the command
         #[arg(short = 'c', long, value_name = "COMMAND")]
         command: Option<String>,
 
@@ -51,11 +36,12 @@ pub enum Commands {
         #[arg(long, value_name = "FILE", conflicts_with = "command", requires_all = ["name", "description"])]
         script: Option<PathBuf>,
 
-        /// Namespace for the entry; scripts default to the configured namespace
+        /// Namespace for the entry; defaults to the configured default namespace
         #[arg(long, value_name = "NAMESPACE")]
         namespace: Option<String>,
 
-        /// Description/summary of the entry; required for Python scripts
+        /// Description/summary; with --name an omitted description stays empty,
+        /// while Python scripts always require one
         #[arg(short = 'd', long, alias = "summary", value_name = "DESCRIPTION")]
         description: Option<String>,
     },
@@ -119,6 +105,14 @@ pub enum Commands {
         /// Path where the trove file should be saved to
         #[arg(long)]
         path: String,
+
+        /// Export every entry without prompting
+        #[arg(long, conflicts_with = "namespace")]
+        all: bool,
+
+        /// Export only these namespaces (comma separated or repeated) without prompting
+        #[arg(long = "namespace", value_name = "NAMESPACE", value_delimiter = ',')]
+        namespace: Vec<String>,
     },
 
     /// Edit a saved command
@@ -133,12 +127,5 @@ pub enum Commands {
         /// shell type to print the config for
         #[arg(short = 's', long)]
         shell: String,
-    },
-
-    /// Synchronize your trove file on multiple clients. If no mode is selected, it will fetch your online trove file and synchronize it with your local trove file
-    Sync {
-        /// Sync mode to run
-        #[arg(value_enum)]
-        command: Mode,
     },
 }

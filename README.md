@@ -31,12 +31,18 @@
 
 ## ✨ What's new
 
+- 🧹 The `hoard sync` cloud feature is gone: no account, no sync server, no
+  `sync_server_url`/`api_token` in the config. Move the trove between machines with a
+  YAML export in a private repository (see *Synchronize commands with another terminal*).
+- 📤 `hoard export` is scriptable: `--all` exports every entry, `--namespace a,b`
+  a subset, both without prompts. A bad path or an unknown namespace now fails
+  instead of reporting `Nothing selected`.
 - Archive Python files with `hoard new --script FILE -n NAME -d SUMMARY`.
   Source and descriptions stay in the trove. Use `hoard pick -n NAME --raw`
   to recover the original source, or select an entry for a Python 3 invocation.
 - 💾 Commands are stored in a **SQLite database** (`trove.db`) instead of a YAML file —
   faster writes, single-row updates, WAL journaling. Legacy `trove.yml` files are
-  imported automatically on first run; YAML remains only for import/export and sync.
+  imported automatically on first run; YAML remains only for import and export.
 - 🎨 **Dracula colorscheme** as the default theme (ratatui UI + prompt dialogs).
 - 📦 All dependencies bumped to current versions: ratatui 0.30 + crossterm (terminal
   backend), dialoguer 0.12, reqwest 0.13, clap 4.6, comfy-table 8, rand 0.10, thiserror 2.
@@ -94,6 +100,7 @@ cargo build --release
 Find the binaries in `./target/release/hoard`
 Move it to wherever you need it ( Like `/usr/local/bin/hoard` )
 Or run
+
 ```
 cargo install --path .
 ```
@@ -101,6 +108,7 @@ cargo install --path .
 ### Linux
 
 Tested on:
+
 - Ubuntu
 - Arch
 - EndeavourOS
@@ -118,17 +126,20 @@ LATEST_RELEASE=1.4.2 ./install.fish
 ```
 
 ### AUR (Arch Linux)
+
 ```
 paru -S hoard
 ```
 
 ### Homebrew (macOS)
+
 ```
 brew tap Hyde46/hoard
 brew install hoard
 ```
 
 ### MacPorts (macOS)
+
 ```
 sudo port install hoard-cli
 ```
@@ -136,6 +147,7 @@ sudo port install hoard-cli
 More info [here](https://ports.macports.org/port/hoard-cli/)
 
 ### Windows
+
 Best to install from source, good luck
 
 ## Autocomplete with Shell plugin
@@ -168,7 +180,6 @@ The hoard package is in the [nixpkgs](https://search.nixos.org/packages?channel=
 
 Either install it with `nix-env -iA hoard`, get it temporarily with `nix-shell -p hoard` or add it to your configuration.
 
-
 <a name="usage"/>
 
 ## 🤸 Usage
@@ -181,15 +192,19 @@ hoard new
 
 If a parameter is not known when saving the command, put a `#` ( Or your customized token from your `~/.config/hoard/config.yml` )
 You can also name your parameters like this:
+
 ```
 echo "My name is #first and I live at #city. Did I tell you my name, #first?"
 ```
+
 When putting `#first` you only have to do it once for each occurrence in the command.
 A parameter name is defined as everything followed by the token until the first space character is found.
 Alternatively you can determine where the named parameter ends by putting a `!` ( Or your customized token from your `~/.config/hoard.config.yml`)
+
 ```
 echo "My name is #first named parameter! and I live at #city. Did I tell you my name, #first?"
 ```
+
 #### Save a Python script
 
 ```sh
@@ -248,7 +263,7 @@ then prompts for its description and tags. SQLite backups and YAML
 import/export preserve the script kind and summary. Existing entries without a
 kind remain shell commands. Use this updated fork on each machine that reads
 Python entries; older clients do not understand the Python kind and may lose it
-when saving. Cloud sync with older servers has not been verified.
+when saving.
 
 #### Search through command trove
 
@@ -269,12 +284,14 @@ If there is a `trove.db` file present in the local directory, `hoard` will only 
 ( Edit ~/.config/hoard/config.yml `read_from_current_directory` to disable )
 
 #### chatGPT integration
+
 When running `hoard list` or through the hoard shortcut, press `Ctrl-a` to be asked for a prompt.
 Desribe what your command is supposed to do, and chatGPT will create and hoard a new command based on your prompt.
 
 If you dont already have an OpenAI account to generate an API key, head to [this](https://platform.openai.com/account/api-keys) page. ( Given the low amount of tokens consumed, this is extremly cheap. ~ 0.01$ for 30 generated commands )
 
 You either need to set the env variable
+
 ```bash
 export OPENAI_API_KEY=abcabcabc
 ```
@@ -288,12 +305,17 @@ chatGPT does not always reply in the same format. Sometimes the resulting comman
 For a private, reviewable archive, keep a YAML export in a private Git repository. This fork preserves shell commands, Python source, entry kinds, descriptions, and tags in the export:
 
 ```sh
-# On the source system. Despite the flag name, structured output is YAML.
-hoard list --json > trove.yml
+# On the source system. Exports every entry, Python sources included.
+hoard export --all --path ./trove.yml
 git add trove.yml
 git commit -m "Update Hoard entries"
 git push
 ```
+
+`--all` and `--namespace` select entries without prompting, so the export can run
+unattended: use `hoard export --namespace kubernetes,git --path ./trove.yml` for a
+subset. (For a one-off filtered archive, `hoard list --json --filter <query> >
+trove.yml` also emits YAML.)
 
 Inspect the export for credentials and other sensitive values before committing it. On another system:
 
@@ -303,36 +325,6 @@ hoard import --uri ./trove.yml
 ```
 
 Prefer one system writing the export at a time. YAML is text, so changes can be reviewed and merged. Do not track `trove.db` in Git: SQLite is binary, produces poor diffs and merges, and may have uncheckpointed data in `trove.db-wal`. Copying a stopped Hoard database is suitable for a one-time migration, but YAML is the better format for ongoing source-controlled synchronization.
-
-You can alternatively keep your commands in sync using `hoard sync`. Compatibility between older sync clients or servers and Python script entries has not been verified.
-
-First register a new account
-```bash
-hoard sync register
-```
-
-Then login with your new account
-```bash
-hoard sync login
-```
-
-Save your local commands online
-```bash
-hoard sync save
-```
-
-Login with the same account on a different computer/terminal and then run
-```bash
-hoard sync get
-```
-This will merge your local trove file with the cloud-based one. You will get prompted how to handle collisions if there are any.
-However, if you are unhappy with how the merge happened, you've got the option to revert the latest `hoard sync get` command
-```bash
-hoard sync revert
-```
-
-If you want to host your own sync server, checkout it's [repository](https://github.com/Hyde46/trove_server).
-Then, update your config file to point to the new server location `~/.config/hoard/config.yml`
 
 #### Delete a command
 
@@ -379,12 +371,15 @@ hoard set_parameter_token <parameter_token>
 ```
 hoard import /path/to/trove.yml
 ```
+
 or
+
 ```
 hoard import https://troves.com/new_trove.yml
 ```
 
 #### Export trove file
+
 ```
 hoard export /path/to/exported/trove.yml
 ```
@@ -394,6 +389,7 @@ hoard export /path/to/exported/trove.yml
 ## :zap: Hoard list shortcuts
 
 Show list of commands in the GUI
+
 ```
 <F1>
 ```
