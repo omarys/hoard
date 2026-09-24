@@ -1,24 +1,15 @@
-use crate::cli_commands::{Cli, Commands, Mode};
+use crate::cli_commands::{Cli, Commands};
 use crate::config::defaults;
-use crate::config::{
-    HoardConfig, load_or_build_config, save_hoard_config_file, save_parameter_token,
-};
+use crate::config::{HoardConfig, load_or_build_config, save_parameter_token};
+use crate::core::secrets::Redacted;
 use crate::core::trove::Trove;
 use crate::core::{CommandKind, HoardCmd};
 use crate::filter::query_trove;
 use crate::gui::commands_gui;
-use crate::gui::prompts::{
-    Confirmation, prompt_input, prompt_multiselect_options, prompt_password,
-    prompt_password_repeat, prompt_yes_or_no,
-};
+use crate::gui::prompts::prompt_multiselect_options;
 use crate::store::Db;
-use crate::sync_models::TokenResponse;
-use crate::util::rem_first_and_last;
-use anyhow::{Context, Result, ensure};
-use base64::Engine as _;
-use base64::engine::general_purpose;
+use anyhow::{Context, Result, bail, ensure};
 use dotenvy::dotenv;
-use reqwest::StatusCode;
 use reqwest::Url;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -74,10 +65,13 @@ impl Hoard {
             Commands::RemoveNamespace { namespace } => self.remove_namespace(&namespace)?,
             Commands::SetParameterToken { name } => self.set_parameter_token(&name)?,
             Commands::Import { uri } => self.import_trove(&uri)?,
-            Commands::Export { path } => self.export_command(&path)?,
+            Commands::Export {
+                path,
+                all,
+                namespace,
+            } => self.export_command(&path, all, &namespace)?,
             Commands::Edit { name } => self.edit_command(&name)?,
             Commands::ShellConfig { shell } => Self::shell_config_command(&shell),
-            Commands::Sync { command } => self.sync(command)?,
         }
 
         Ok((autocomplete_command, cli.autocomplete))
@@ -113,13 +107,6 @@ impl Hoard {
             .parameter_ending_token
             .as_deref()
             .unwrap_or(defaults::PARAMETER_ENDING_TOKEN)
-    }
-
-    fn sync_server_url(&self) -> &str {
-        self.config
-            .sync_server_url
-            .as_deref()
-            .unwrap_or(defaults::SYNC_SERVER_URL)
     }
 
     fn new_command(
@@ -160,20 +147,78 @@ impl Hoard {
             return self.persist();
         }
 
-        let trove_namespaces = self.trove.namespaces();
-        let new_command = HoardCmd::default().with_command_string_input(
-            command,
-            self.parameter_token(),
-            self.parameter_ending_token(),
-        );
-        let new_command = match namespace {
-            Some(namespace) => new_command.with_namespace(&namespace),
-            None => new_command.with_namespace_input(&trove_namespaces),
+        let token = self.parameter_token().to_string();
+        let ending_token = self.parameter_ending_token().to_string();
+
+        // Providing `--name` selects a non-interactive save: every value that is
+        // not passed falls back to a default instead of prompting, so
+        // `hoard new -n NAME -c COMMAND` is safe to script. Without `--name`
+        // hoard prompts as usual, pre-filling whatever was passed on the CLI.
+        let scripted = name.is_some();
+        let new_command = match (name.as_deref(), command) {
+            (Some(name), Some(command)) => {
+                HoardCmd::is_name_valid(name)?;
+                HoardCmd::default().with_command(&command)
+            }
+            (Some(_), None) => bail!(
+                "`hoard new --name` also needs --command. Omit --name to be prompted for every value."
+            ),
+            (None, command) => {
+                HoardCmd::default().with_command_string_input(command, &token, &ending_token)
+            }
+        };
+        let (new_command, redacted) = new_command.with_redacted_secrets(&token, &ending_token);
+        report_redactions(&redacted);
+
+        let new_command = match (scripted, namespace) {
+            (true, namespace) => new_command.with_namespace(
+                namespace
+                    .as_deref()
+                    .unwrap_or(&self.config.default_namespace),
+            ),
+            (false, Some(namespace)) => new_command.with_namespace(&namespace),
+            (false, None) => new_command.with_namespace_input(&self.trove.namespaces()),
+        };
+        let new_command = match name {
+            // Already validated above.
+            Some(name) => new_command.with_name(&name),
+            None => new_command.with_name_input(None, &self.trove),
+        };
+        let new_command = match (scripted, description) {
+            (true, description) => {
+                new_command.with_description(description.as_deref().unwrap_or_default())
+            }
+            (false, description) => {
+                new_command.with_description_input(description.unwrap_or_default())
+            }
+        };
+        let new_command = match tags {
+            Some(tags) => {
+                ensure!(
+                    !tags
+                        .split(',')
+                        .any(|tag| tag.trim().contains(char::is_whitespace)),
+                    "Tags can't contain whitespaces"
+                );
+                new_command.with_tags_raw(&tags)
+            }
+            // A scripted save without --tags stores no tags.
+            None if scripted => new_command,
+            None => new_command.with_tags_input(None),
+        };
+
+        // A scripted save must fail loudly instead of replacing an entry.
+        if scripted && let Some(existing) = self.trove.get_command_collision(&new_command) {
+            bail!(
+                "An entry named '{}' already exists in namespace '{}'. Use `hoard edit` or a different name.",
+                existing.name,
+                existing.namespace
+            );
         }
-        .with_name_input(name, &self.trove)
-        .with_description_input(description.unwrap_or_default())
-        .with_tags_input(tags);
+
+        let saved = format!("{}/{}", new_command.namespace, new_command.name);
         self.trove.add_command(new_command, true)?;
+        println!("Saved [{saved}]");
         self.persist()
     }
 
@@ -246,48 +291,81 @@ impl Hoard {
         self.persist()
     }
 
-    fn export_command(&self, path: &str) -> Result<()> {
+    /// Write a YAML export of the trove.
+    ///
+    /// `--all` and `--namespace` select entries without prompting so the export
+    /// can be scripted; without either, hoard prompts for namespaces and then
+    /// for individual commands.
+    fn export_command(&self, path: &str, all: bool, namespaces: &[String]) -> Result<()> {
         let target_path = Path::new(path);
         if target_path.file_name().is_none() {
-            println!("No valid path with filename provided.");
-            return Ok(());
+            bail!("No valid path with filename provided.");
         }
 
-        let namespaces = self.trove.namespaces();
-        let selected_namespaces = prompt_multiselect_options(
-            "Export specific namespaces?",
-            "Namespaces to export ( Space to select )",
-            &namespaces,
-            |namespace| *namespace,
-        );
-        if selected_namespaces.is_empty() {
-            println!("Nothing selected");
-            return Ok(());
-        }
+        let selected: Vec<HoardCmd> = if all || !namespaces.is_empty() {
+            if !all {
+                let available = self.trove.namespaces();
+                for namespace in namespaces {
+                    ensure!(
+                        available.contains(&namespace.as_str()),
+                        "No entry in namespace '{namespace}'. Available namespaces: {}",
+                        available.join(", ")
+                    );
+                }
+            }
+            let selected = self
+                .trove
+                .commands
+                .iter()
+                .filter(|command| all || namespaces.iter().any(|n| n == &command.namespace))
+                .cloned()
+                .collect::<Vec<_>>();
+            ensure!(!selected.is_empty(), "Nothing to export");
+            selected
+        } else {
+            let available = self.trove.namespaces();
+            let selected_namespaces = prompt_multiselect_options(
+                "Export specific namespaces?",
+                "Namespaces to export ( Space to select )",
+                &available,
+                |namespace| *namespace,
+            );
+            if selected_namespaces.is_empty() {
+                println!("Nothing selected");
+                return Ok(());
+            }
 
-        let commands = self
-            .trove
-            .commands
-            .iter()
-            .filter(|command| selected_namespaces.contains(&command.namespace.as_str()))
-            .collect::<Vec<_>>();
+            let commands = self
+                .trove
+                .commands
+                .iter()
+                .filter(|command| selected_namespaces.contains(&command.namespace.as_str()))
+                .collect::<Vec<_>>();
 
-        let selected_commands = prompt_multiselect_options(
-            "Export specific commands?",
-            "Commands to export ( Space to select )",
-            &commands,
-            |command| command.name.as_str(),
-        );
-        if selected_commands.is_empty() {
-            println!("Nothing selected");
-            return Ok(());
-        }
+            let selected_commands = prompt_multiselect_options(
+                "Export specific commands?",
+                "Commands to export ( Space to select )",
+                &commands,
+                |command| command.name.as_str(),
+            );
+            if selected_commands.is_empty() {
+                println!("Nothing selected");
+                return Ok(());
+            }
+            selected_commands.into_iter().cloned().collect()
+        };
 
         let mut trove_for_export = Trove::default();
-        for command in selected_commands {
+        for command in &selected {
             trove_for_export.add_command(command.clone(), true)?;
         }
-        trove_for_export.to_yaml_file(target_path)
+        trove_for_export.to_yaml_file(target_path)?;
+        println!(
+            "Exported {} entries to {}",
+            selected.len(),
+            target_path.display()
+        );
+        Ok(())
     }
 
     fn set_parameter_token(&self, parameter_token: &str) -> Result<()> {
@@ -335,6 +413,9 @@ impl Hoard {
                     .with_description_input(command.description.clone())
                     .with_tags_input(Some(command.get_tags_as_string()))
                     .with_namespace_input(&trove_namespaces);
+                let (new_command, redacted) = new_command
+                    .with_redacted_secrets(self.parameter_token(), self.parameter_ending_token());
+                report_redactions(&redacted);
                 self.trove.remove_command(command_name)?;
                 self.trove.add_command(new_command, true)?;
                 self.persist()?;
@@ -356,198 +437,18 @@ impl Hoard {
         };
         print!("{src}");
     }
+}
 
-    fn trove_backup_path(&self) -> Result<std::path::PathBuf> {
-        self.config
-            .trove_path
-            .as_deref()
-            .map(|p| p.with_extension("db.bk"))
-            .context("trove path is not configured")
+/// Tells the user which placeholders replaced secrets. The secret values
+/// themselves are never printed.
+fn report_redactions(redacted: &Redacted) {
+    if redacted.is_clean() {
+        return;
     }
-
-    /// Stores a consistent snapshot of the database before a `sync get` merge.
-    fn backup_trove(&self) -> Result<()> {
-        self.db.backup_to(&self.trove_backup_path()?)
-    }
-
-    /// Restores the database from the backup taken before the last `sync get`.
-    fn revert_trove(&mut self) -> Result<()> {
-        let backup_path = self.trove_backup_path()?;
-        if !backup_path.exists() {
-            println!("No trove backup found.");
-            return Ok(());
-        }
-        if matches!(
-            prompt_yes_or_no(
-                "Found a backup from just before the last time you ran `hoard sync`. Are you sure you want to revert to this state?"
-            ),
-            Confirmation::Yes
-        ) {
-            let backup = Db::open(&backup_path)?;
-            let commands = backup.commands()?;
-            self.db.sync(&commands)?;
-            self.trove = Trove::from_commands(&commands);
-            println!("Done!");
-        } else {
-            println!("Keeping current trove database...");
-        }
-        Ok(())
-    }
-
-    fn register_user(&self) -> Result<()> {
-        println!("Registering account..");
-        let user_email = prompt_input("Email: ", false, None);
-        let user_pw = prompt_password_repeat("Password: ");
-        let client = reqwest::blocking::Client::new();
-        let register_url = format!("{}register", self.sync_server_url());
-        let register_body = format!("{{\"password\": \"{user_pw}\",\"email\": \"{user_email}\"}}");
-        let body = client
-            .post(register_url)
-            .body(register_body)
-            .header("Content-Type", "application/json")
-            .send()?;
-        if body.status() == StatusCode::CREATED {
-            println!(
-                "Created new user! Verification not needed for now. Run `hoard sync login` next.\n\nPlease consider supporting further development and help offset server costs here:\nbuy.stripe.com/9AQ9Bm6Nx4qb6YwaEE\nThis is the only time this message will pop up :)"
-            );
-        } else {
-            println!("Something went all wrong. Try another email.");
-        }
-        Ok(())
-    }
-
-    fn login(&mut self) -> Result<()> {
-        println!("Logging in..");
-        let user_email = prompt_input("Email: ", false, None);
-        let user_pw = prompt_password("Password: ");
-        let login_body = format!("{{\"password\": \"{user_pw}\",\"email\": \"{user_email}\"}}");
-        let client = reqwest::blocking::Client::new();
-        let token_url = format!("{}token/new", self.sync_server_url());
-        let body = client
-            .get(token_url)
-            .body(login_body)
-            .header("Content-Type", "application/json")
-            .send()?;
-        if body.status() == StatusCode::CREATED {
-            let token: TokenResponse = body.json()?;
-            let b64_token = general_purpose::STANDARD.encode(token.token);
-            self.config.api_token = Some(b64_token);
-            let config_path = self
-                .config
-                .config_home_path
-                .as_deref()
-                .context("config home path is not configured")?;
-            save_hoard_config_file(&self.config, config_path)?;
-            println!("Success!");
-        } else {
-            println!("Invalid Email and password combination.");
-        }
-        Ok(())
-    }
-
-    fn get_trove_file(&self) -> Result<Option<Trove>> {
-        println!("Syncing ...");
-        let token = self
-            .config
-            .api_token
-            .as_deref()
-            .context("No API token set, please log in")?;
-        let client = reqwest::blocking::Client::new();
-        let save_url = format!("{}v1/trove", self.sync_server_url());
-        let body = client
-            .get(save_url)
-            .bearer_auth(token)
-            .header("Content-Type", "text/plain")
-            .send()?;
-        if body.status() == StatusCode::OK {
-            // The server wraps the trove YAML in a JSON string
-            let escaped_string = body.text()?.replace("\\n", "\n").replace("\\\"", "\"");
-            return Trove::from_yaml_str(rem_first_and_last(&escaped_string)).map(Some);
-        }
-        Ok(None)
-    }
-
-    fn sync_safe(&self) -> Result<()> {
-        println!("Uploading trove...");
-        let token = self
-            .config
-            .api_token
-            .as_deref()
-            .context("No API token set, please log in")?;
-        let client = reqwest::blocking::Client::new();
-        let save_url = format!("{}v1/trove", self.sync_server_url());
-        let trove_yaml = self.trove.to_yaml();
-        let body = client
-            .put(save_url)
-            .body(trove_yaml)
-            .bearer_auth(token)
-            .header("Content-Type", "text/plain")
-            .send()?;
-        if body.status() == StatusCode::CREATED {
-            println!("Done!");
-        } else {
-            println!("Could not save trove. Is it a valid trove file?");
-            println!("{}", body.text()?);
-        }
-        Ok(())
-    }
-
-    pub fn sync(&mut self, command: Mode) -> Result<()> {
-        match command {
-            Mode::Register => self.register_user()?,
-            Mode::Login => {
-                if self.is_logged_in() {
-                    println!("You are already logged in.");
-                } else {
-                    self.login()?;
-                }
-            }
-            Mode::Logout => {
-                println!("Logging out..");
-                self.config.api_token = None;
-                let config_path = self
-                    .config
-                    .config_home_path
-                    .as_deref()
-                    .context("config home path is not configured")?;
-                save_hoard_config_file(&self.config, config_path)?;
-            }
-            Mode::Save => {
-                if !self.is_logged_in() {
-                    println!(
-                        "Please log in [hoard sync login] or register an account [hoard sync register] to use the sync feature!"
-                    );
-                    return Ok(());
-                }
-                self.sync_safe()?;
-            }
-            Mode::Get => {
-                if !self.is_logged_in() {
-                    println!(
-                        "Please log in [hoard sync login] or register an account [hoard sync register] to use the sync feature!"
-                    );
-                    return Ok(());
-                }
-                // Pull trove and merge. A backup is kept to allow reverting if
-                // the merge goes wrong or commands are removed by accident.
-                if let Some(trove) = self.get_trove_file()? {
-                    self.backup_trove()?;
-                    if self.trove.merge_trove(&trove) {
-                        self.persist()?;
-                        println!("All done!");
-                    } else {
-                        println!("No changes");
-                    }
-                } else {
-                    println!("Could not fetch trove file from your account!");
-                }
-            }
-            Mode::Revert => self.revert_trove()?,
-        }
-        Ok(())
-    }
-
-    const fn is_logged_in(&self) -> bool {
-        self.config.api_token.is_some()
-    }
+    eprintln!(
+        "⚠️  Replaced {} secret(s) with placeholders before saving: {}\n   \
+         Fill them in again when you pick the entry, or read them from a secret manager.",
+        redacted.redactions.len(),
+        redacted.summary()
+    );
 }

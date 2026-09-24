@@ -12,7 +12,7 @@
 
 use crate::core::{CommandKind, HoardCmd};
 use anyhow::{Context, Result, ensure};
-use rusqlite::{Connection, Row, backup::Backup, params};
+use rusqlite::{Connection, Row, params};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -116,14 +116,6 @@ impl Db {
             }
         }
         tx.commit()?;
-        Ok(())
-    }
-
-    /// Writes a consistent snapshot of the database to `dest`.
-    pub fn backup_to(&self, dest: &Path) -> Result<()> {
-        let mut dest_conn = Connection::open(dest)?;
-        let backup = Backup::new(&self.conn, &mut dest_conn)?;
-        backup.step(-1)?;
         Ok(())
     }
 
@@ -307,17 +299,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join(TROVE_DB)).unwrap();
         assert!(db.commands().unwrap().is_empty());
-    }
-
-    #[test]
-    fn backup_snapshot() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = Db::open(&dir.path().join(TROVE_DB)).unwrap();
-        db.sync(&[command("a", "ns", "echo a")]).unwrap();
-        let backup_path = dir.path().join("trove.db.bk");
-        db.backup_to(&backup_path).unwrap();
-        let backup = Db::open(&backup_path).unwrap();
-        assert_eq!(backup.commands().unwrap().len(), 1);
     }
 
     #[test]

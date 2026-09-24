@@ -1,5 +1,6 @@
 pub mod error;
 pub mod parameters;
+pub mod secrets;
 pub mod trove;
 
 use crate::core::error::HoardError;
@@ -132,7 +133,6 @@ impl HoardCmd {
     }
 
     /// Set the name of the command
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_name(self, name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -149,7 +149,6 @@ impl HoardCmd {
     }
 
     /// Set the namespace of the command
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_namespace(self, namespace: &str) -> Self {
         Self {
             namespace: namespace.to_string(),
@@ -351,6 +350,14 @@ impl HoardCmd {
     /// Prompts the user for a command name, validating it against `trove`.
     pub fn with_name_input(self, default_value: Option<String>, trove: &Trove) -> Self {
         self.with_name_input_prompt(default_value, trove, "Name your command")
+    }
+
+    /// Set the description of the command
+    pub fn with_description(self, description: &str) -> Self {
+        Self {
+            description: description.to_string(),
+            ..self
+        }
     }
 
     /// Prompts the user for a description, with a default value.

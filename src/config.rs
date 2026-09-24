@@ -18,7 +18,6 @@ pub(crate) mod defaults {
     pub const QUERY_PREFIX: &str = "  >";
     pub const PARAMETER_TOKEN: &str = "#";
     pub const PARAMETER_ENDING_TOKEN: &str = "!";
-    pub const SYNC_SERVER_URL: &str = "https://troveserver.herokuapp.com/";
 }
 
 /// The hoard configuration.
@@ -43,9 +42,7 @@ pub struct HoardConfig {
     /// Token to indicate the end of a named parameter
     pub parameter_ending_token: Option<String>,
     pub read_from_current_directory: Option<bool>,
-    // URL to trove sync server
-    pub sync_server_url: Option<String>,
-    pub api_token: Option<String>,
+    /// API key for the optional chatGPT command generation
     pub gpt_api_key: Option<String>,
 }
 
@@ -64,8 +61,6 @@ impl Default for HoardConfig {
             parameter_token: Some(defaults::PARAMETER_TOKEN.to_string()),
             parameter_ending_token: Some(defaults::PARAMETER_ENDING_TOKEN.to_string()),
             read_from_current_directory: Some(Self::default_read_from_current_directory()),
-            sync_server_url: Some(defaults::SYNC_SERVER_URL.to_string()),
-            api_token: None,
             gpt_api_key: None,
         }
     }
@@ -95,6 +90,18 @@ impl HoardConfig {
 
     const fn default_read_from_current_directory() -> bool {
         true
+    }
+
+    /// Parameter start and ending tokens, falling back to the defaults.
+    pub fn parameter_tokens(&self) -> (&str, &str) {
+        (
+            self.parameter_token
+                .as_deref()
+                .unwrap_or(defaults::PARAMETER_TOKEN),
+            self.parameter_ending_token
+                .as_deref()
+                .unwrap_or(defaults::PARAMETER_ENDING_TOKEN),
+        )
     }
 }
 
@@ -149,7 +156,20 @@ fn load_or_build(path: &Path) -> Result<HoardConfig> {
         if config.read_from_current_directory.unwrap_or(false) && local_trove_exists() {
             Some(Path::new(TROVE_DB).to_path_buf())
         } else {
-            legacy_trove_path.as_ref().map(|p| p.with_extension("db"))
+            // The global trove. A relative `trove_path` (what the v1.x
+            // migration writes) is relative to the config directory, not to
+            // the current directory, otherwise the global trove would be
+            // unreachable from anywhere but the config directory itself.
+            legacy_trove_path
+                .as_ref()
+                .map(|p| p.with_extension("db"))
+                .map(|p| {
+                    if p.is_absolute() {
+                        p
+                    } else {
+                        hoard_dir.join(p)
+                    }
+                })
         };
     if config.trove_path != legacy_trove_path {
         save_config(&config, &hoard_config_path)?;
@@ -199,10 +219,6 @@ fn append_missing_default_values_to_config(
         loaded_config.read_from_current_directory = Some(false);
         dirty = true;
     }
-    if loaded_config.sync_server_url.is_none() {
-        loaded_config.sync_server_url = Some(defaults::SYNC_SERVER_URL.to_string());
-        dirty = true;
-    }
 
     if dirty {
         save_config(loaded_config, hoard_config_path)?;
@@ -225,11 +241,6 @@ fn save_config(config_to_save: &HoardConfig, config_path: &Path) -> Result<()> {
     let yaml = serde_yaml::to_string(config_to_save)?;
     fs::write(config_path, yaml)
         .with_context(|| format!("Could not write config file {}", config_path.display()))
-}
-
-/// Persists `config_to_save` at `base_path/config.yml`.
-pub fn save_hoard_config_file(config_to_save: &HoardConfig, base_path: &Path) -> Result<()> {
-    save_config(config_to_save, &base_path.join(HOARD_CONFIG))
 }
 
 #[cfg(test)]

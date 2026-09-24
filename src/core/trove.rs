@@ -16,8 +16,7 @@ const CARGO_VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// A `Trove` is the in-memory view of the command collection. It is loaded
 /// from and persisted to SQLite via [`crate::store::Db`]; the YAML
-/// serialization is kept for importing/exporting trove files and for the
-/// cloud sync protocol.
+/// serialization is kept for importing and exporting trove files.
 #[derive(Debug, Serialize, Clone, Deserialize)]
 pub struct Trove {
     /// The hoard version with which the commands are being stored, to
