@@ -1,0 +1,96 @@
+{
+  "generatedAt": "2026-10-07T20:46:04.228Z",
+  "specVersion": "1.0.0",
+  "domains": [
+    {
+      "domain": "cargo",
+      "specPath": "openspec/specs/cargo/spec.md",
+      "sourceFiles": [
+        "/home/omary/Dev/hoard/.pre-commit-config.yaml",
+        "/home/omary/Dev/hoard/CHANGES.md",
+        "/home/omary/Dev/hoard/Cargo.toml",
+        "/home/omary/Dev/hoard/install.sh",
+        "/home/omary/Dev/hoard/README.md",
+        "/home/omary/Dev/hoard/.gitignore",
+        "/home/omary/Dev/hoard/.pre-commit-hooks.yaml",
+        "/home/omary/Dev/hoard/LICENSE",
+        "/home/omary/Dev/hoard/mise.toml",
+        "/home/omary/Dev/hoard/rustfmt.toml"
+      ],
+      "requirementCount": 4,
+      "dependsOn": [],
+      "calledBy": []
+    },
+    {
+      "domain": "cli-commands",
+      "specPath": "openspec/specs/cli-commands/spec.md",
+      "sourceFiles": [
+        "/home/omary/Dev/hoard/src/store.rs",
+        "/home/omary/Dev/hoard/src/config.rs",
+        "/home/omary/Dev/hoard/src/util.rs",
+        "/home/omary/Dev/hoard/src/cli_commands.rs",
+        "/home/omary/Dev/hoard/src/gpt.rs",
+        "/home/omary/Dev/hoard/src/hoard.rs",
+        "/home/omary/Dev/hoard/src/filter.rs",
+        "/home/omary/Dev/hoard/src/main.rs",
+        "/home/omary/Dev/hoard/src/theme.rs"
+      ],
+      "requirementCount": 10,
+      "dependsOn": [],
+      "calledBy": []
+    },
+    {
+      "domain": "core",
+      "specPath": "openspec/specs/core/spec.md",
+      "sourceFiles": [
+        "/home/omary/Dev/hoard/src/core/mod.rs",
+        "/home/omary/Dev/hoard/src/core/parameters.rs",
+        "/home/omary/Dev/hoard/src/core/trove.rs",
+        "/home/omary/Dev/hoard/src/core/error.rs",
+        "/home/omary/Dev/hoard/src/core/secrets.rs"
+      ],
+      "requirementCount": 35,
+      "dependsOn": [],
+      "calledBy": []
+    },
+    {
+      "domain": "gui",
+      "specPath": "openspec/specs/gui/spec.md",
+      "sourceFiles": [
+        "/home/omary/Dev/hoard/src/gui/commands_gui.rs",
+        "/home/omary/Dev/hoard/src/gui/event.rs",
+        "/home/omary/Dev/hoard/src/gui/help.rs",
+        "/home/omary/Dev/hoard/src/gui/prompts.rs",
+        "/home/omary/Dev/hoard/src/gui/theme.rs",
+        "/home/omary/Dev/hoard/src/gui/mod.rs"
+      ],
+      "requirementCount": 15,
+      "dependsOn": [],
+      "calledBy": []
+    },
+    {
+      "domain": "shell",
+      "specPath": "openspec/specs/shell/spec.md",
+      "sourceFiles": [
+        "/home/omary/Dev/hoard/src/shell/hoard.bash",
+        "/home/omary/Dev/hoard/src/shell/hoard.fish",
+        "/home/omary/Dev/hoard/src/shell/hoard.zsh"
+      ],
+      "requirementCount": 1,
+      "dependsOn": [],
+      "calledBy": []
+    },
+    {
+      "domain": "workflows",
+      "specPath": "openspec/specs/workflows/spec.md",
+      "sourceFiles": [
+        "/home/omary/Dev/hoard/.github/workflows/lint.yml",
+        "/home/omary/Dev/hoard/.github/workflows/release.yml",
+        "/home/omary/Dev/hoard/.github/workflows/test.yml"
+      ],
+      "requirementCount": 4,
+      "dependsOn": [],
+      "calledBy": []
+    }
+  ]
+}
