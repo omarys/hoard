@@ -216,6 +216,32 @@ impl Trove {
             .ok_or_else(|| anyhow!("No matching command found with name: {name}"))
     }
 
+    /// Look up an entry by `name` or by the unambiguous `namespace/name`.
+    ///
+    /// A bare name wins when exactly one entry carries it; otherwise the caller
+    /// gets `None` and should offer [`Self::entry_keys`] as suggestions.
+    pub fn resolve(&self, spec: &str) -> Option<&HoardCmd> {
+        if let Some((namespace, name)) = spec.split_once('/') {
+            return self
+                .commands
+                .iter()
+                .find(|c| c.namespace == namespace && c.name == name);
+        }
+        let mut hits = self.commands.iter().filter(|c| c.name == spec);
+        match (hits.next(), hits.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
+    }
+
+    /// Every entry as `namespace/name`, the form [`Self::resolve`] accepts.
+    pub fn entry_keys(&self) -> Vec<String> {
+        self.commands
+            .iter()
+            .map(|c| format!("{}/{}", c.namespace, c.name))
+            .collect()
+    }
+
     /// Look up a command by name and prompt for its parameter values.
     pub fn pick_command(&self, config: &HoardConfig, name: &str) -> Result<HoardCmd> {
         Ok(self.find_command(name)?.clone().with_input_parameters(
@@ -306,7 +332,27 @@ impl Trove {
         .expect("serializing a trove cannot fail")
     }
 
+    /// Serialize the trove as minified, token-dense JSON.
+    ///
+    /// Only `{"k", "c"}` plus the non-empty `d` (description), `p` (parameter
+    /// names) and — for search results — `s` (similarity score) survive. The
+    /// `scores` slice is aligned with `commands`; `None` omits scores entirely.
+    pub fn to_compact_json(&self, scores: Option<&[u32]>) -> String {
+        let commands: Vec<serde_json::Value> = self
+            .commands
+            .iter()
+            .enumerate()
+            .map(|(index, command)| {
+                let score = scores.and_then(|scores| scores.get(index).copied());
+                command_compact_json(command, score)
+            })
+            .collect();
+        serde_json::to_string(&serde_json::json!({ "commands": commands }))
+            .expect("serializing a trove cannot fail")
+    }
+
     /// Serialize a single command as JSON, for `hoard list --best --json`.
+    #[cfg(test)]
     pub fn command_to_json(command: &HoardCmd) -> String {
         serde_json::to_string_pretty(&command_json(command))
             .expect("serializing a command cannot fail")
@@ -314,7 +360,7 @@ impl Trove {
 }
 
 /// The JSON projection of one command, shared by `list --json` and `--best`.
-fn command_json(command: &HoardCmd) -> serde_json::Value {
+pub fn command_json(command: &HoardCmd) -> serde_json::Value {
     serde_json::json!({
         "name": command.name,
         "command": command.command,
@@ -323,7 +369,46 @@ fn command_json(command: &HoardCmd) -> serde_json::Value {
         "namespace": command.namespace,
         "tags": command.tags,
         "created": crate::util::iso_date(command.created),
+        "params": command_params_json(command),
     })
+}
+
+/// The dense projection: `{k, c}` plus `d`, `p` and `s` when they carry data.
+///
+/// Empty fields are dropped rather than emitted as `"d": ""`, which is where
+/// most of the token win of `--compact` comes from.
+pub fn command_compact_json(command: &HoardCmd, score: Option<u32>) -> serde_json::Value {
+    let mut object = serde_json::Map::new();
+    object.insert("k".to_string(), serde_json::json!(command.name));
+    object.insert("c".to_string(), serde_json::json!(command.command));
+    if !command.description.is_empty() {
+        object.insert("d".to_string(), serde_json::json!(command.description));
+    }
+    let params = crate::core::template::param_names(&command.command);
+    if !params.is_empty() {
+        object.insert("p".to_string(), serde_json::json!(params));
+    }
+    if let Some(score) = score.filter(|score| *score > 0) {
+        object.insert("s".to_string(), serde_json::json!(score));
+    }
+    serde_json::Value::Object(object)
+}
+
+/// Placeholder metadata of one command, as advertised by `schema`.
+fn command_params_json(command: &HoardCmd) -> serde_json::Value {
+    let params: Vec<serde_json::Value> = crate::core::template::param_specs(&command.command)
+        .into_iter()
+        .map(|spec| {
+            let mut object = serde_json::Map::new();
+            object.insert("name".to_string(), serde_json::json!(spec.name));
+            object.insert("required".to_string(), serde_json::json!(spec.required()));
+            if let Some(default) = spec.default {
+                object.insert("default".to_string(), serde_json::json!(default));
+            }
+            serde_json::Value::Object(object)
+        })
+        .collect();
+    serde_json::Value::Array(params)
 }
 
 #[cfg(test)]

@@ -31,6 +31,12 @@
 
 ## ✨ What's new
 
+- 🤖 **Headless mode for agents**: `--json` on every subcommand, plus `--compact`
+  (`--tokens`) for a minified `{"k","c","d","p","s"}` projection, `hoard eval` for
+  parameter substitution, `hoard schema` for the machine-readable contract, and one
+  deterministic exit code per failure class. See *Headless contract (agents)*.
+- 🧩 **Templated commands**: `{{name}}` and `{{name=default}}` placeholders next to the
+  legacy `#name!` markers; `hoard eval <name> -p k=v` renders an entry without running it.
 - 🧹 The `hoard sync` cloud feature is gone: no account, no sync server, no
   `sync_server_url`/`api_token` in the config. Move the trove between machines with a
   YAML export in a private repository (see *Synchronize commands with another terminal*).
@@ -335,7 +341,7 @@ change which candidates are imported.
 
 ```sh
 # JSON: {version, commands:[{name, command, kind, description, namespace,
-# tags, created}]}, pretty-printed with two spaces, best match first.
+# tags, created, params}]}, pretty-printed with two spaces, best match first.
 hoard list --json
 hoard list --json --filter kubernetes
 
@@ -357,9 +363,77 @@ instead of handing an agent the wrong line to run. Ties break on
 `(namespace, name)`. Commands found by a filter are
 returned in that ranked order, and `--best` takes the first. When nothing
 matches, `--best` and `--raw` print nothing on
-stdout, explain the miss on stderr and exit with status 1. `--raw` implies
-`--best` and ignores `--json`. `hoard export` remains the YAML/trove-file path;
+stdout, explain the miss on stderr and exit with status 2 (`CommandNotFound`). `--raw` implies
+`--best`; when both `--raw` and `--json` are given, `--json` wins so the stream stays
+parseable. `hoard export` remains the YAML/trove-file path;
 `list --json` is not a trove file.
+
+#### Headless contract (agents)
+
+Everything an agent needs is reachable without a terminal. Add `--json` (`-j`) to any
+subcommand; `--compact` (alias `--tokens`) implies it and switches to a minified,
+single-line payload.
+
+```sh
+# Dense retrieval: {"commands":[{"k":..,"c":..,"d":..,"p":[..],"s":..}]}
+# `d` is omitted when empty, `p` when the command has no placeholders, and `s`
+# (a lexical score, highest first) only appears on a scored query.
+hoard list --json --compact --filter kubernetes
+hoard list --best --json --compact --filter deploy
+
+# Render an entry without running it. Human mode prints the command alone.
+# --json: {ok, name, command, kind, namespace, params} with descriptive keys;
+# --compact: {ok, k, c, p}. A repeated key is rejected, not last-wins.
+hoard eval logs -p container_id=web
+hoard eval logs -p container_id=web --json
+hoard eval logs -p container_id=web --json --compact
+
+# The contract itself, so a model can build calls instead of guessing.
+hoard schema --json --compact
+```
+
+`{{name}}` marks a required placeholder, `{{name=default}}` an optional one; both are
+derived from the stored template, so no parameter list can drift out of sync. `eval`
+renders the legacy `#name!` markers as well, which keeps a trove written before
+placeholders existed usable. A Python entry is source, not a shell template: it has no
+parameters, `eval` returns its source untouched (a `{{braces}}` in a script is source
+text) and passing `-p` to one is an `InvalidParameter`.
+
+Failures are data, never prose:
+
+```json
+{
+  "ok": false,
+  "status": "error",
+  "error_type": "InvalidParameter",
+  "message": "missing required parameter(s): container_id",
+  "missing_params": ["container_id"],
+  "suggested_keys": ["container_id"]
+}
+```
+
+| exit | `error_type` | meaning |
+| --- | --- | --- |
+| 0 | — | success |
+| 1 | `ParseError` | the invocation itself is invalid (bad flag, missing argument) |
+| 2 | `CommandNotFound` | the entry or query matched nothing |
+| 3 | `InvalidParameter` | missing, unknown or malformed parameter |
+| 4 | `RuntimeError` | I/O, database or validation failure |
+
+In `--json` mode the payload goes to **stdout** even on failure, so a caller parses one
+document per call. Without it the message stays on **stderr** and stdout stays empty.
+ANSI colors and cursor sequences are stripped whenever stdout is not a TTY or `--json`
+is given, so `hoard pick -n NAME --raw` and `hoard list --compact` are safe to pipe.
+
+`pick` returns the **stored source** (placeholders intact); `eval` is the step that
+renders it. That split keeps retrieval one call and execution one call, with no
+interactive prompt in between.
+
+Subcommands that need a person never guess in headless mode: `edit` refuses with
+`InvalidParameter` (exit 3), and `history import` requires an explicit `--all` (or
+`--dry-run`) instead of importing everything behind the caller's back. `new` prints its
+`{ok, saved, k, ns, c, p}` payload only *after* the trove was written, so a payload on
+stdout is always a claim that survives the process.
 
 #### chatGPT integration
 

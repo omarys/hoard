@@ -4,13 +4,54 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
+- 🤖 **Headless contract for agents.** Every subcommand accepts `--json` (`-j`) and an
+  error now exits with a fixed code per class: `1` ParseError, `2` CommandNotFound,
+  `3` InvalidParameter, `4` RuntimeError (`0` on success). In JSON mode the error
+  payload (`{ok:false, status:"error", error_type, message, suggested_keys}`,
+  plus `missing_params` for parameters) goes to stdout, so a caller parses exactly
+  one document per call; without it the message stays on stderr and stdout stays
+  empty. `--best`/`--raw` misses now exit `2` instead of `1`. ANSI colors and
+  cursor sequences are stripped whenever stdout is not a TTY or `--json` is set.
+- 📉 **`--compact` (`--tokens`)** implies `--json` and prints a minified
+  `{"commands":[{"k","c","d","p","s"}]}` projection: no namespace, kind, tags or
+  timestamps, `d` omitted when empty, `p` (parameter names) omitted when the
+  command has no placeholders, and a lexical score `s` only on a scored query.
+- 🧩 **Templated commands.** `{{name}}` is a required placeholder and
+  `{{name=default}}` an optional one, derived from the stored template itself so
+  no parameter list can drift. New `hoard eval <name> -p key=value ...` renders an
+  entry without executing it (`--json` echoes the applied values); it also renders
+  the legacy `#name!` markers, which stay literal inside Python sources. The
+  rendered invocation goes to stdout (JSON in `--json` mode), so it can be piped
+  or inspected without ever running it.
+- 📜 **`hoard schema`** prints the machine-readable contract — `$defs` for the
+  command, compact command, list, eval and error payloads, `invocations` with the
+  argv recipes for search/best/eval/pick/new, the placeholder rules and the
+  exit-code table — so an agent can construct valid calls instead of guessing.
+- 🔒 **No prompts behind an agent's back.** Headless (`--json` or no TTY) `edit`
+  refuses with `InvalidParameter` (exit 3) instead of letting dialoguer save
+  defaults over an entry, `history import` requires an explicit `--all` (or
+  `--dry-run`) instead of importing every captured command, a failed multi-select
+  prompt now selects *nothing* rather than *everything*, and the first-run
+  namespace question is skipped silently instead of warning on stderr.
+- 🧾 **Deterministic payload shapes.** `eval --json` emits `{ok, name, command,
+  kind, namespace, params}` (dense `{ok, k, c, p}` only with `--compact`), `new
+  --json` emits `{ok, saved, k, ns, c, p, redactions}` for scripts too, and both
+  print only after the trove was persisted. `--json` now wins over `--raw` (one
+  parseable stream), `list --simple --json` no longer prints a table, `pick
+  --raw` still returns the byte-exact source, and unknown names/namespaces exit 2
+  (`CommandNotFound`) on every subcommand instead of 4. Repeated `--param` keys
+  and empty values for required parameters are rejected; `eval` accepts values
+  containing `=` (`-p pattern=a=b`). Duplicate placeholders share one default
+  (`echo {{a=x}} {{a}}` renders `echo x x`). A Python entry has no parameters:
+  `eval` returns its source verbatim (braces inside a script are source text) and
+  passing `-p` to one is an `InvalidParameter` instead of a silent rewrite.
 - 🤖 **Agent retrieval through `hoard list`**: `--json` now emits real JSON
   (`{version, commands:[{name, command, kind, description, namespace, tags,
   created}]}`, created as an ISO date or `null`, pretty-printed with two spaces)
   instead of YAML. New `--best` returns only the single highest-scoring match for
   `--filter`, and `--raw` prints just that command for piping into a shell. A miss
   prints nothing on stdout, a `no match for "<filter>"` line on stderr, and exits
-  1. `hoard export` stays the YAML/trove-file path.
+  2 (see the exit codes above). `hoard export` stays the YAML/trove-file path.
 - 🎯 Ranking precision: intent words must be whole tokens (`cargo clippy` is
   `test`, `--no-check-certificate` is not, `log-collection` is not a log
   command) and a leading `cd <path>` no longer becomes the program tag. The

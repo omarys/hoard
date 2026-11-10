@@ -1,5 +1,6 @@
 use crate::core::HoardCmd;
 use crate::core::trove::Trove;
+use crate::headless::{CliError, OutputMode};
 
 /// Weights of the individual matches, most identifying field first.
 ///
@@ -20,20 +21,35 @@ const COMMAND_CONTAINS: u32 = 5;
 /// where *every* word matches; when that yields nothing, commands matching any
 /// word are returned instead. Ties break on `(namespace, name)` so the result
 /// is deterministic. An empty query returns the trove as stored.
+#[cfg(test)]
 pub fn search<'a>(trove: &'a Trove, query: &str) -> Vec<&'a HoardCmd> {
+    search_scored(trove, query)
+        .into_iter()
+        .map(|(command, _)| command)
+        .collect()
+}
+
+/// The same ranking as [`search`], with the lexical score of every hit.
+///
+/// The score is the raw sum of the per-word weights, so it orders results and
+/// tells an agent how well a candidate matched; it is not normalized. Entries
+/// returned for an empty query score `0`.
+pub fn search_scored<'a>(trove: &'a Trove, query: &str) -> Vec<(&'a HoardCmd, u32)> {
     let words: Vec<String> = query
         .split_whitespace()
         .map(|word| word.to_lowercase())
         .collect();
     if words.is_empty() {
-        return trove.commands.iter().collect();
+        return trove.commands.iter().map(|command| (command, 0)).collect();
     }
 
     let mut hits = ranked(trove, &words, true);
     if hits.is_empty() {
         hits = ranked(trove, &words, false);
     }
-    hits.into_iter().map(|(_, command)| command).collect()
+    hits.into_iter()
+        .map(|(score, command)| (command, score))
+        .collect()
 }
 
 /// Score candidates in descending order; `require_all` selects AND or OR matching.
@@ -115,21 +131,42 @@ pub struct BestOutput {
 
 /// Render the single best match for `query`.
 ///
-/// `raw` prints the stored command alone (for piping into a shell), `json` one
-/// JSON object, and neither the usual table row. No match prints nothing on
-/// stdout, explains itself on stderr and asks for exit code 1.
-pub fn best(trove: &Trove, query: &str, json: bool, raw: bool) -> BestOutput {
-    let Some(command) = search(trove, query).into_iter().next() else {
+/// `raw` prints the stored command alone (for piping into a shell), a JSON mode
+/// one JSON object, and neither the usual table row. A miss prints nothing on
+/// stdout, explains itself on stderr and asks for exit code 1 in human mode;
+/// in a JSON mode it prints the structured error payload and asks for the
+/// `CommandNotFound` exit code instead.
+pub fn best(trove: &Trove, query: &str, mode: OutputMode, raw: bool) -> BestOutput {
+    let Some((command, score)) = search_scored(trove, query).into_iter().next() else {
+        let error = CliError::not_found(
+            format!("no match for {query:?}"),
+            crate::headless::suggest(query, trove.entry_keys()),
+        );
         return BestOutput {
-            stdout: String::new(),
-            stderr: format!("no match for {query:?}\n"),
-            exit_code: 1,
+            stdout: if mode.is_json() {
+                format!("{}\n", mode.serialize(&error.to_json()))
+            } else {
+                String::new()
+            },
+            stderr: if mode.is_json() {
+                String::new()
+            } else {
+                format!("{}\n", error.message)
+            },
+            exit_code: error.exit_code(),
         };
     };
-    let stdout = if raw {
-        format!("{}\n", command.command)
-    } else if json {
-        format!("{}\n", Trove::command_to_json(command))
+    // `--json` wins over `--raw`: json mode is a promise about the stream, and
+    // a caller that asked for both gets the parseable one.
+    let stdout = if mode.is_json() {
+        let value = if mode.is_compact() {
+            crate::core::trove::command_compact_json(command, Some(score))
+        } else {
+            crate::core::trove::command_json(command)
+        };
+        format!("{}\n", mode.serialize(&value))
+    } else if raw {
+        format!("{}\n", crate::headless::sanitize(&command.command))
     } else {
         format!(
             "{}\n",
@@ -211,21 +248,55 @@ mod test_filter {
             "docker compose up -d",
             "containers",
         )]);
-        let output = best(&trove, "compose", false, true);
+        let output = best(&trove, "compose", OutputMode::Human, true);
         assert_eq!(output.stdout, "docker compose up -d\n");
         assert_eq!(output.stderr, "");
         assert_eq!(output.exit_code, 0);
-        // --raw wins over --json.
-        assert_eq!(best(&trove, "compose", true, true), output);
+        // --json wins over --raw: a JSON stream stays parseable.
+        let json = best(&trove, "compose", OutputMode::Json, true);
+        assert_eq!(json.exit_code, 0);
+        let payload: serde_json::Value = serde_json::from_str(json.stdout.trim()).unwrap();
+        assert_eq!(payload["command"], "docker compose up -d");
+        assert_eq!(json.stderr, "");
     }
 
     #[test]
-    fn best_without_a_match_asks_for_exit_code_one() {
+    fn best_without_a_match_reports_command_not_found() {
         let trove = Trove::from_commands(&[command("status", "dev", "git status", "")]);
-        let output = best(&trove, "kubernetes", false, false);
-        assert_eq!(output.exit_code, 1);
+        let output = best(&trove, "kubernetes", OutputMode::Human, false);
+        assert_eq!(output.exit_code, 2);
         assert_eq!(output.stdout, "");
         assert_eq!(output.stderr, "no match for \"kubernetes\"\n");
-        assert_eq!(best(&Trove::default(), "", false, true).exit_code, 1);
+        assert_eq!(
+            best(&Trove::default(), "", OutputMode::Human, true).exit_code,
+            2
+        );
+    }
+
+    #[test]
+    fn best_miss_is_a_structured_error_in_json_mode() {
+        let trove = Trove::from_commands(&[command("pods", "kube", "kubectl get pods", "")]);
+        let output = best(&trove, "podz", OutputMode::JsonCompact, false);
+        assert_eq!(output.exit_code, 2);
+        assert_eq!(output.stderr, "");
+        let json: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error_type"], "CommandNotFound");
+        assert_eq!(json["suggested_keys"][0], "kube/pods");
+    }
+
+    #[test]
+    fn scores_order_hits_and_survive_into_compact_json() {
+        let trove = Trove::from_commands(&[
+            command("compose", "dev", "containers ps", ""),
+            command("containers", "dev", "docker ps", ""),
+        ]);
+        let scored = search_scored(&trove, "containers");
+        assert_eq!(scored[0].0.name, "containers");
+        assert!(scored[0].1 > scored[1].1);
+        let compact = best(&trove, "containers", OutputMode::JsonCompact, false);
+        let json: serde_json::Value = serde_json::from_str(&compact.stdout).unwrap();
+        assert_eq!(json["k"], "containers");
+        assert_eq!(json["s"], 100);
     }
 }

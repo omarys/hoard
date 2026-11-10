@@ -1,6 +1,7 @@
 pub mod error;
 pub mod parameters;
 pub mod secrets;
+pub mod template;
 pub mod trove;
 
 use crate::core::error::HoardError;
@@ -158,12 +159,18 @@ impl HoardCmd {
 
     /// Return a shell invocation without changing the archived source.
     pub fn shell_command(&self) -> String {
+        self.shell_command_with(&self.command)
+    }
+
+    /// Return a shell invocation for `source`, which may be a rendered copy of
+    /// the archived source (`hoard eval`).
+    pub fn shell_command_with(&self, source: &str) -> String {
         match self.kind {
-            CommandKind::Shell => self.command.clone(),
+            CommandKind::Shell => source.to_string(),
             CommandKind::Python => {
                 // Base64 keeps multiline source and quoting intact in Bash, Zsh and Fish.
                 // ponytail: argv size limits apply; use pick --raw to restore large scripts.
-                let source = STANDARD.encode(self.command.as_bytes());
+                let source = STANDARD.encode(source.as_bytes());
                 format!(
                     "python3 -c 'import base64; exec(compile(base64.b64decode(\"{source}\"), \"<hoard>\", \"exec\"))'"
                 )

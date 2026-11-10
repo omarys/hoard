@@ -613,6 +613,7 @@ impl Collected {
             })
             .collect();
         serde_json::json!({
+            "ok": true,
             "zsh": source(&self.stats.zsh),
             "pi": source(&self.stats.pi),
             "candidates": self.stats.zsh.candidates + self.stats.pi.candidates,
@@ -634,6 +635,8 @@ pub struct ImportOptions {
     pub all: bool,
     /// Report only, write nothing.
     pub dry_run: bool,
+    /// Keep stdout free for a machine-readable payload.
+    pub quiet: bool,
 }
 
 /// The names that were (or, on a dry run, would be) added.
@@ -648,6 +651,16 @@ impl ImportOutcome {
     pub fn must_persist(&self) -> bool {
         !self.dry_run && !self.names.is_empty()
     }
+
+    /// Machine-readable summary for headless callers.
+    pub fn report_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "ok": true,
+            "dry_run": self.dry_run,
+            "count": self.names.len(),
+            "imported": self.names,
+        })
+    }
 }
 
 /// Add the selected candidates to `trove`.
@@ -657,7 +670,9 @@ pub fn import(
     options: &ImportOptions,
 ) -> Result<ImportOutcome> {
     if collection.candidates.is_empty() {
-        println!("Nothing to import. Run `hoard history scan` to see what was filtered out.");
+        if !options.quiet {
+            println!("Nothing to import. Run `hoard history scan` to see what was filtered out.");
+        }
         return Ok(ImportOutcome {
             names: Vec::new(),
             dry_run: options.dry_run,
@@ -671,7 +686,9 @@ pub fn import(
         match pick(&collection.candidates)? {
             Some(selected) => selected,
             None => {
-                println!("Nothing selected, nothing imported.");
+                if !options.quiet {
+                    println!("Nothing selected, nothing imported.");
+                }
                 return Ok(ImportOutcome {
                     names: Vec::new(),
                     dry_run: options.dry_run,
@@ -700,7 +717,7 @@ pub fn import(
 
         if options.dry_run {
             outcome.names.push(name.clone());
-            if outcome.names.len() <= SAMPLE_LIMIT {
+            if !options.quiet && outcome.names.len() <= SAMPLE_LIMIT {
                 println!(
                     "would add {name:<MAX_NAME_LEN$} [{namespace}] {}",
                     candidate.preview()
@@ -726,16 +743,18 @@ pub fn import(
         }
     }
 
-    if options.dry_run {
-        if outcome.names.len() > SAMPLE_LIMIT {
-            println!("… {} more", outcome.names.len() - SAMPLE_LIMIT);
+    if !options.quiet {
+        if options.dry_run {
+            if outcome.names.len() > SAMPLE_LIMIT {
+                println!("… {} more", outcome.names.len() - SAMPLE_LIMIT);
+            }
+            println!(
+                "\nDry run: {} command(s) would be added, nothing was written.",
+                outcome.names.len()
+            );
+        } else {
+            println!("Imported {} command(s).", outcome.names.len());
         }
-        println!(
-            "\nDry run: {} command(s) would be added, nothing was written.",
-            outcome.names.len()
-        );
-    } else {
-        println!("Imported {} command(s).", outcome.names.len());
     }
     Ok(outcome)
 }
@@ -1299,6 +1318,7 @@ mod test_history {
             &mut trove,
             collection,
             &ImportOptions {
+                quiet: true,
                 namespace: None,
                 all: true,
                 dry_run: false,
@@ -1322,6 +1342,7 @@ mod test_history {
             &mut trove,
             collection,
             &ImportOptions {
+                quiet: true,
                 namespace: None,
                 all: true,
                 dry_run: false,
@@ -1354,6 +1375,7 @@ mod test_history {
             &mut trove,
             collection,
             &ImportOptions {
+                quiet: true,
                 namespace: Some("custom".to_string()),
                 all: true,
                 dry_run: true,
@@ -1382,6 +1404,7 @@ mod test_history {
             &mut trove,
             collection,
             &ImportOptions {
+                quiet: true,
                 namespace: None,
                 all: true,
                 dry_run: false,

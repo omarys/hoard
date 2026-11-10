@@ -31,7 +31,10 @@ where
             }
         }
     } else {
-        options.to_vec()
+        // "No" — and a prompt that could not run because there is no terminal —
+        // selects nothing. Returning every option here would mutate state on a
+        // caller that only asked a question.
+        Vec::new()
     }
 }
 

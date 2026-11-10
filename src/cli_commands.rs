@@ -8,6 +8,14 @@ pub struct Cli {
     #[arg(long)]
     pub autocomplete: bool,
 
+    /// Machine-readable output for agents; errors become JSON too
+    #[arg(short = 'j', long, global = true)]
+    pub json: bool,
+
+    /// Token-dense JSON (implies --json): `{"k","c"}` instead of full entries
+    #[arg(long, visible_alias = "tokens", global = true)]
+    pub compact: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -52,10 +60,6 @@ pub enum Commands {
         #[arg(short = 'f', long)]
         filter: Option<String>,
 
-        /// Return hoarded commands in structured format
-        #[arg(short = 'j', long)]
-        json: bool,
-
         /// Return hoarded commands in a simplified table view
         #[arg(short = 's', long)]
         simple: bool,
@@ -79,6 +83,24 @@ pub enum Commands {
         #[arg(long)]
         raw: bool,
     },
+
+    /// Render a saved command, substituting {{placeholders}}, without running it
+    Eval {
+        /// Entry to render: `name`, or `namespace/name` when the name is ambiguous
+        #[arg(value_name = "NAME")]
+        name: String,
+
+        /// Placeholder value; repeat for every parameter (KEY=VALUE)
+        #[arg(long = "param", short = 'p', value_name = "KEY=VALUE")]
+        param: Vec<String>,
+
+        /// Accepted for symmetry: eval never executes anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Print the JSON schema of the machine-readable output and inputs
+    Schema {},
 
     /// Set a custom parameter token
     SetParameterToken {
@@ -200,10 +222,6 @@ pub enum HistoryCommands {
     Scan {
         #[command(flatten)]
         args: HistoryArgs,
-
-        /// Print the report as a single JSON object
-        #[arg(long)]
-        json: bool,
     },
 
     /// Add commands from shell history and agent sessions to the trove

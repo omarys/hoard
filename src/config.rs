@@ -76,7 +76,14 @@ impl HoardConfig {
     }
 
     /// Lets the user choose a default namespace on first run.
+    ///
+    /// Without a terminal there is nobody to ask, and a first-run question is
+    /// not a reason to print a warning into an agent's stderr: take the
+    /// documented default silently.
     pub fn with_default_namespace(self) -> Self {
+        if !crate::headless::stdin_is_tty() {
+            return self;
+        }
         let default_namespace = prompt_input(
             "This is the first time running hoard.\nChoose a default namespace where you want to hoard your commands.",
             false,
