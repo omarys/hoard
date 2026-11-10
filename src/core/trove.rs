@@ -260,6 +260,12 @@ impl Trove {
 
     /// Print the trove as a table to stdout.
     pub fn print_trove(&self) {
+        // Ignore a closed pipe so `hoard list -s | head` does not panic.
+        let _ = writeln!(std::io::stdout().lock(), "{}", self.render_table());
+    }
+
+    /// The trove as a table, one row per command.
+    pub fn render_table(&self) -> String {
         let mut table = Table::new();
         table.load_style(UTF8_FULL);
         table.force_no_tty();
@@ -283,9 +289,41 @@ impl Trove {
                 Cell::new(command.get_tags_as_string()),
             ]);
         }
-        // Ignore a closed pipe so `hoard list -s | head` does not panic.
-        let _ = writeln!(std::io::stdout().lock(), "{table}");
+        table.to_string()
     }
+
+    /// Serialize the trove as JSON for `hoard list --json`.
+    ///
+    /// The shape is meant for agents: a `version` plus `commands`, each with
+    /// only the identifying fields. Pretty-printed with two spaces so it stays
+    /// stable and greppable. `created` is an ISO date or `null`.
+    pub fn to_json(&self) -> String {
+        let commands: Vec<serde_json::Value> = self.commands.iter().map(command_json).collect();
+        serde_json::to_string_pretty(&serde_json::json!({
+            "version": self.version,
+            "commands": commands,
+        }))
+        .expect("serializing a trove cannot fail")
+    }
+
+    /// Serialize a single command as JSON, for `hoard list --best --json`.
+    pub fn command_to_json(command: &HoardCmd) -> String {
+        serde_json::to_string_pretty(&command_json(command))
+            .expect("serializing a command cannot fail")
+    }
+}
+
+/// The JSON projection of one command, shared by `list --json` and `--best`.
+fn command_json(command: &HoardCmd) -> serde_json::Value {
+    serde_json::json!({
+        "name": command.name,
+        "command": command.command,
+        "kind": command.kind.as_str(),
+        "description": command.description,
+        "namespace": command.namespace,
+        "tags": command.tags,
+        "created": crate::util::iso_date(command.created),
+    })
 }
 
 #[cfg(test)]
@@ -360,6 +398,31 @@ mod test_commands {
             .unwrap();
 
         assert_eq!(vec![namespace1, namespace2], trove.namespaces());
+    }
+
+    #[test]
+    fn json_export_has_the_documented_shape() {
+        let mut trove = Trove::from_commands(&[command("pods", "kube", "kubectl get pods -A")]);
+        trove.commands[0].tags = vec!["kubernetes".to_string()];
+        let json: serde_json::Value = serde_json::from_str(&trove.to_json()).unwrap();
+        assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+        let entry = &json["commands"].as_array().unwrap()[0];
+        assert_eq!(entry["name"], "pods");
+        assert_eq!(entry["command"], "kubectl get pods -A");
+        assert_eq!(entry["kind"], "shell");
+        assert_eq!(entry["namespace"], "kube");
+        assert_eq!(entry["description"], "");
+        assert_eq!(entry["tags"][0], "kubernetes");
+        // `created` is an ISO date, never a number or a struct.
+        let created = entry["created"].as_str().unwrap();
+        assert_eq!(created.len(), 10, "{created}");
+        // Pretty-printed with two spaces so the output stays diffable.
+        assert!(trove.to_json().contains("\n  \"commands\""));
+        // A single command reuses the same projection for `--best --json`.
+        let single =
+            serde_json::from_str::<serde_json::Value>(&Trove::command_to_json(&trove.commands[0]))
+                .unwrap();
+        assert_eq!(&single, entry);
     }
 
     #[test]

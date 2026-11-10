@@ -86,10 +86,14 @@ fn archives_source_and_summary_and_restores_exact_bytes() {
     assert!(home.path().join("trove.db").exists());
     assert!(!home.path().join(".config/hoard/trove.db").exists());
 
-    // Import/export uses the same YAML serializer as the structured listing.
-    let exported = success(hoard(home.path(), &["list", "--json"]));
+    // `hoard export` stays the trove-file (YAML) path; `list --json` is JSON for
+    // agents and is not a trove file.
     let restored = test_home();
-    fs::write(restored.path().join("trove.yml"), exported).unwrap();
+    let trove_file = restored.path().join("trove.yml");
+    success(hoard(
+        home.path(),
+        &["export", "--all", "--path", trove_file.to_str().unwrap()],
+    ));
     assert_eq!(
         success(hoard(restored.path(), &["pick", "-n", "report", "--raw"])),
         source.as_bytes()

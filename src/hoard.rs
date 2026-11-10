@@ -1,12 +1,13 @@
-use crate::cli_commands::{Cli, Commands};
+use crate::cli_commands::{Cli, Commands, HistoryCommands};
 use crate::config::defaults;
 use crate::config::{HoardConfig, load_or_build_config, save_parameter_token};
 use crate::core::secrets::Redacted;
 use crate::core::trove::Trove;
 use crate::core::{CommandKind, HoardCmd};
-use crate::filter::query_trove;
+use crate::filter::best;
 use crate::gui::commands_gui;
 use crate::gui::prompts::prompt_multiselect_options;
+use crate::history;
 use crate::store::Db;
 use anyhow::{Context, Result, bail, ensure};
 use dotenvy::dotenv;
@@ -55,9 +56,11 @@ impl Hoard {
                 filter,
                 json,
                 simple,
+                best,
+                raw,
             } => {
                 autocomplete_command = self
-                    .list_commands(simple, json, filter)?
+                    .list_commands(simple, json, filter, best, raw)?
                     .unwrap_or_default()
             }
             Commands::Pick { name, raw } => self.pick_command(&name, raw)?,
@@ -72,6 +75,7 @@ impl Hoard {
             } => self.export_command(&path, all, &namespace)?,
             Commands::Edit { name } => self.edit_command(&name)?,
             Commands::ShellConfig { shell } => Self::shell_config_command(&shell),
+            Commands::History { action } => self.history_command(action)?,
         }
 
         Ok((autocomplete_command, cli.autocomplete))
@@ -107,6 +111,48 @@ impl Hoard {
             .parameter_ending_token
             .as_deref()
             .unwrap_or(defaults::PARAMETER_ENDING_TOKEN)
+    }
+
+    /// `hoard history scan` and `hoard history import`.
+    fn history_command(&mut self, action: HistoryCommands) -> Result<()> {
+        let token = self.parameter_token().to_string();
+        let ending = self.parameter_ending_token().to_string();
+        match action {
+            HistoryCommands::Scan { args, json } => {
+                let options = history::Options::from_args(&args);
+                let collection = history::Collected::new(&self.trove, &options, &token, &ending);
+                for warning in &collection.warnings {
+                    eprintln!("⚠️  {warning}");
+                }
+                if json {
+                    println!("{}", collection.report_json());
+                } else {
+                    print!("{}", collection.report());
+                }
+            }
+            HistoryCommands::Import {
+                args,
+                namespace,
+                all,
+                dry_run,
+            } => {
+                let options = history::Options::from_args(&args);
+                let collection = history::Collected::new(&self.trove, &options, &token, &ending);
+                for warning in &collection.warnings {
+                    eprintln!("⚠️  {warning}");
+                }
+                let import_options = history::ImportOptions {
+                    namespace,
+                    all,
+                    dry_run,
+                };
+                let outcome = history::import(&mut self.trove, collection, &import_options)?;
+                if outcome.must_persist() {
+                    self.persist()?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn new_command(
@@ -227,16 +273,41 @@ impl Hoard {
         is_simple: bool,
         is_structured: bool,
         filter: Option<String>,
+        is_best: bool,
+        is_raw: bool,
     ) -> Result<Option<String>> {
+        // `--raw` is `--best` without the decoration. Both print from here so
+        // the stored command reaches stdout byte for byte (`main` trims).
+        if is_best || is_raw {
+            let query = filter.unwrap_or_default();
+            let output = best(&self.trove, &query, is_structured, is_raw);
+            if !output.stdout.is_empty() {
+                let mut stdout = std::io::stdout().lock();
+                stdout.write_all(output.stdout.as_bytes())?;
+                stdout.flush()?;
+            }
+            if !output.stderr.is_empty() {
+                eprint!("{}", output.stderr);
+            }
+            if output.exit_code != 0 {
+                std::process::exit(output.exit_code);
+            }
+            return Ok(None);
+        }
         if self.trove.is_empty() {
             println!("No command hoarded.\nRun [ hoard new ] first to hoard a command.");
         } else if is_simple {
             self.trove.print_trove();
         } else if is_structured {
-            // Structured output (YAML), filtered by `filter`
+            // Structured output (JSON) for agents, ranked best-first so the
+            // first element is the answer. `hoard export` is the YAML/trove-file
+            // path.
             let query = filter.unwrap_or_default();
-            let filtered_trove = query_trove(&self.trove, &query);
-            return Ok(Some(filtered_trove.to_yaml()));
+            let commands: Vec<crate::core::HoardCmd> = crate::filter::search(&self.trove, &query)
+                .into_iter()
+                .cloned()
+                .collect();
+            return Ok(Some(Trove::from_commands(&commands).to_json()));
         } else {
             match commands_gui::run(&mut self.trove, &self.config) {
                 Ok(selected_command) => {

@@ -63,6 +63,8 @@ enum Shape {
     UserFlag,
     /// `--password value`, secret in the `value` group.
     FlagValue,
+    /// A quoted credential literal on its own, secret inside the quotes.
+    Literal,
     /// `key=value`, `key: value` or `?key=value`, base name from the `kw` group.
     Assignment,
     /// `Authorization: Bearer <secret>`, secret in the `value` group.
@@ -200,6 +202,18 @@ fn rules() -> &'static [Rule] {
                 Shape::Whole,
                 r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\b",
             ),
+            rule(
+                "token",
+                "quoted token literal",
+                Shape::Literal,
+                // A long credential-shaped literal in quotes, e.g.
+                // `echo -n '<key>' | base64`. 48+ characters keeps UUIDs (36)
+                // and 40-hex commit SHAs out of it; pure hex is deliberately
+                // still matched, because the connector keys this exists for are
+                // 64 hex characters. That costs the odd false positive on a
+                // pasted digest — the safe direction.
+                r#"(?P<value>'[A-Za-z0-9+/=_\-]{48,}'|"[A-Za-z0-9+/=_\-]{48,}")"#,
+            ),
         ]
     })
 }
@@ -247,6 +261,18 @@ fn should_redact(value: &str, token: &str, ending_token: &str) -> bool {
 }
 
 /// Split a possibly quoted value into (opening quote, inner value, closing quote).
+/// A credential-shaped literal quoted inside a shell reference, e.g. the
+/// `'…'` in `"$(echo -n '…')"`. Only used where the key names a credential,
+/// so 32+ is safe; 40-hex commit SHAs and UUIDs are never in that position.
+fn inner_literal(value: &str) -> Option<&str> {
+    static INNER_LITERAL: OnceLock<Regex> = OnceLock::new();
+    let regex = INNER_LITERAL.get_or_init(|| {
+        Regex::new(r#"'[A-Za-z0-9+/=_\-]{32,}'|"[A-Za-z0-9+/=_\-]{32,}""#)
+            .expect("redaction pattern is always valid")
+    });
+    regex.find(value).map(|found| quoted(found.as_str()).1)
+}
+
 fn quoted(value: &str) -> (&str, &str, &str) {
     for quote in ['"', '\''] {
         if value.len() >= 2 && value.starts_with(quote) && value.ends_with(quote) {
@@ -261,6 +287,16 @@ fn apply(rule: &Rule, caps: &Captures, redactor: &mut Redactor) -> String {
     let original = caps.get(0).map_or("", |m| m.as_str());
     let (token, ending) = (redactor.token, redactor.ending);
     match rule.shape {
+        // A standalone quoted literal: replace what is inside the quotes.
+        Shape::Literal => {
+            let value = caps.name("value").map_or("", |m| m.as_str());
+            let (open, inner, close) = quoted(value);
+            if !should_redact(inner, token, ending) {
+                return original.to_string();
+            }
+            let placeholder = redactor.placeholder(rule.base, rule.label, inner);
+            format!("{open}{placeholder}{close}")
+        }
         Shape::Whole => {
             if !should_redact(original, token, ending) {
                 return original.to_string();
@@ -320,20 +356,26 @@ fn apply(rule: &Rule, caps: &Captures, redactor: &mut Redactor) -> String {
         Shape::Assignment => {
             let value = caps.name("value").map_or("", |m| m.as_str());
             let (open, inner, close) = quoted(value);
-            if !should_redact(inner, token, ending) {
-                return original.to_string();
-            }
             let base = caps.name("kw").map_or(rule.base.to_string(), |m| {
                 m.as_str().to_ascii_lowercase().replace(['_', '.'], "-")
             });
-            let placeholder = redactor.placeholder(&base, rule.label, inner);
+            // A shell substitution is a reference and is left alone, but the
+            // quoted literal inside it is the secret (`KEY="$(echo -n 'x')"`).
+            let redacted_inner = if should_redact(inner, token, ending) {
+                redactor.placeholder(&base, rule.label, inner)
+            } else if let Some(literal) = inner_literal(inner) {
+                let placeholder = redactor.placeholder(&base, "quoted token literal", literal);
+                inner.replacen(literal, &placeholder, 1)
+            } else {
+                return original.to_string();
+            };
             format!(
                 "{}{}{}{}{}{}",
                 caps.name("key").map_or("", |m| m.as_str()),
                 caps.name("kw").map_or("", |m| m.as_str()),
                 caps.name("sep").map_or("", |m| m.as_str()),
                 open,
-                placeholder,
+                redacted_inner,
                 close
             )
         }
@@ -342,6 +384,41 @@ fn apply(rule: &Rule, caps: &Captures, redactor: &mut Redactor) -> String {
 
 /// Replace `needle` outside every `token..ending` placeholder, so an
 /// already-inserted placeholder can never be rewritten again.
+/// Secrets at least this long are swept everywhere they repeat; shorter ones
+/// only after `=`, so common words in the rest of the command survive.
+const SWEEP_ANYWHERE_LEN: usize = 12;
+
+/// Replace `needle` only where it directly follows `=`.
+fn replace_after_equals(
+    command: &str,
+    needle: &str,
+    replacement: &str,
+    placeholder_re: Option<&Regex>,
+) -> String {
+    if needle.is_empty() {
+        return command.to_string();
+    }
+    let in_placeholder = |index: usize| {
+        placeholder_re.is_some_and(|re| {
+            re.find_iter(command)
+                .any(|found| found.start() <= index && index + needle.len() <= found.end())
+        })
+    };
+    let mut out = String::with_capacity(command.len());
+    let mut last = 0;
+    for (index, _) in command.match_indices(needle) {
+        let after_equals = index > 0 && command.as_bytes()[index - 1] == b'=';
+        if !after_equals || in_placeholder(index) {
+            continue;
+        }
+        out.push_str(&command[last..index]);
+        out.push_str(replacement);
+        last = index + needle.len();
+    }
+    out.push_str(&command[last..]);
+    out
+}
+
 fn replace_outside(
     command: &str,
     needle: &str,
@@ -419,14 +496,18 @@ impl<'a> Redactor<'a> {
 
         let mut current = command.to_string();
         for (secret, placeholder) in secrets {
-            if current.contains(&secret) {
-                current = replace_outside(
-                    &current,
-                    &secret,
-                    &placeholder,
-                    self.placeholder_re.as_ref(),
-                );
+            if !current.contains(&secret) {
+                continue;
             }
+            let placeholders = self.placeholder_re.as_ref();
+            current = if secret.len() >= SWEEP_ANYWHERE_LEN {
+                replace_outside(&current, &secret, &placeholder, placeholders)
+            } else {
+                // A short value (`test`, `admin`, `dev`) is only a credential
+                // where it follows `=`: sweeping it everywhere would turn
+                // `--name test-db` into `--name #password!-db`.
+                replace_after_equals(&current, &secret, &placeholder, placeholders)
+            };
         }
         current
     }
@@ -563,6 +644,76 @@ mod test_secrets {
             assert_eq!(r.command, command, "must stay untouched");
             assert!(r.is_clean());
         }
+    }
+
+    #[test]
+    fn redacts_the_literal_inside_a_command_substitution() {
+        // Shell history is full of `KEY="$(echo -n 'literal')"`: the wrapper is
+        // a reference, but the quoted literal is the secret itself.
+        let key = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2";
+        let command = format!(
+            "kubectl create secret generic av \\\n  --from-literal=CONNECTOR_API_KEY=\"$(echo -n '{key}')\" \\\n  --dry-run=client -o yaml"
+        );
+        let r = redact(&command);
+        assert!(!r.command.contains(key), "the key itself must be gone");
+        assert!(
+            r.command.contains("$(echo -n '#api-key!'"),
+            "wrapper must stay usable: {}",
+            r.command
+        );
+        assert_eq!(r.redactions.len(), 1);
+        assert_eq!(r.redactions[0].label, "quoted token literal");
+    }
+
+    #[test]
+    fn redacts_a_named_assignment_with_a_short_literal() {
+        // 40 characters: too short for the unnamed rule, but the key names a
+        // credential, so it must still go.
+        let key = "9f2c4e8a1b3d5f7092468ace13579bdf02468ace";
+        let r = redact(&format!("VT_TOKEN=\"$(printf %s '{key}')\""));
+        assert!(!r.command.contains(key));
+        assert_eq!(r.command, "VT_TOKEN=\"$(printf %s '#token!')\"");
+    }
+
+    #[test]
+    fn redacts_a_long_quoted_literal_without_a_key_name() {
+        let key = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3";
+        let r = redact(&format!("echo -n '{key}' | base64 | wl-copy"));
+        assert!(!r.command.contains(key));
+        assert_eq!(r.command, "echo -n '#token!' | base64 | wl-copy");
+    }
+
+    #[test]
+    fn keeps_uuids_commit_shas_and_digests() {
+        for command in [
+            "kubectl delete pod '550e8400-e29b-41d4-a716-446655440000'",
+            "git checkout '9f2c4e8a1b3d5f7092468ace13579bdf02468ace'",
+            "docker pull app@sha256:9f2c4e8a1b3d5f7092468ace13579bdf02468ace13579bdf02468ace13579bdf1",
+            "echo 'sha256:9f2c4e8a1b3d5f7092468ace13579bdf02468ace13579bdf02468ace13579bdf1'",
+        ] {
+            let r = redact(command);
+            assert_eq!(r.command, command, "must stay untouched");
+        }
+    }
+
+    #[test]
+    fn short_secrets_are_not_swept_through_the_rest_of_the_command() {
+        // `test` after `=` is a credential; the same word in `--name test-db`
+        // is not, and rewriting it would produce a broken command.
+        let r = redact("docker run -e MYSQL_PASSWORD=test --name test-db mysql:test");
+        assert_eq!(
+            r.command,
+            "docker run -e MYSQL_PASSWORD=#password! --name test-db mysql:test"
+        );
+        assert_eq!(r.redactions.len(), 1);
+    }
+
+    #[test]
+    fn long_secrets_are_still_swept_everywhere() {
+        let secret = "9f2c4e8a1b3d5f7092468ace";
+        let r = redact(&format!("tool --api-key={secret} --header x-{secret}"));
+        assert!(!r.command.contains(secret));
+        assert_eq!(r.command, "tool --api-key=#api-key! --header x-#api-key!");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -59,6 +59,14 @@ pub enum Commands {
         /// Return hoarded commands in a simplified table view
         #[arg(short = 's', long)]
         simple: bool,
+
+        /// Return only the single best match for --filter
+        #[arg(long)]
+        best: bool,
+
+        /// Print only the stored command of the best match, for piping
+        #[arg(long)]
+        raw: bool,
     },
 
     /// Print a shell invocation for a saved command or Python script
@@ -127,5 +135,92 @@ pub enum Commands {
         /// shell type to print the config for
         #[arg(short = 's', long)]
         shell: String,
+    },
+
+    /// Find and import commands worth hoarding from shell history and agent sessions
+    History {
+        #[command(subcommand)]
+        action: HistoryCommands,
+    },
+}
+
+/// Where `hoard history` looks for commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub enum HistorySource {
+    /// zsh history ($HISTFILE, else ~/.zsh_history)
+    Zsh,
+    /// pi / pi-bolt agent session transcripts
+    Pi,
+    /// Both sources
+    #[default]
+    All,
+}
+
+impl HistorySource {
+    /// Whether the zsh history file is read.
+    pub fn includes_zsh(self) -> bool {
+        matches!(self, Self::Zsh | Self::All)
+    }
+
+    /// Whether agent session transcripts are read.
+    pub fn includes_pi(self) -> bool {
+        matches!(self, Self::Pi | Self::All)
+    }
+}
+
+/// Flags shared by `hoard history scan` and `hoard history import`.
+#[derive(Debug, Default, Clone, Args)]
+pub struct HistoryArgs {
+    /// Which sources to read
+    #[arg(long, value_enum, default_value_t = HistorySource::All)]
+    pub source: HistorySource,
+
+    /// Shell history file; defaults to $HISTFILE, else ~/.zsh_history
+    #[arg(long, value_name = "PATH")]
+    pub histfile: Option<PathBuf>,
+
+    /// Agent session directory; repeatable. Defaults to ~/.pi/agent/sessions
+    /// and ~/.pi-bolt/agent/sessions when they exist
+    #[arg(long, value_name = "PATH")]
+    pub sessions_dir: Vec<PathBuf>,
+
+    /// Secret scanning: auto (use trufflehog when installed), off, or a binary path
+    #[arg(long, value_name = "auto|off|PATH", default_value = "auto")]
+    pub trufflehog: String,
+
+    /// Maximum number of candidates to consider
+    #[arg(long, value_name = "N")]
+    pub limit: Option<usize>,
+}
+
+/// Subcommands of `hoard history`.
+#[derive(Subcommand)]
+pub enum HistoryCommands {
+    /// Report hoardable commands without changing anything
+    Scan {
+        #[command(flatten)]
+        args: HistoryArgs,
+
+        /// Print the report as a single JSON object
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Add commands from shell history and agent sessions to the trove
+    Import {
+        #[command(flatten)]
+        args: HistoryArgs,
+
+        /// Namespace for every imported entry instead of the per-source defaults
+        #[arg(long, value_name = "NAMESPACE")]
+        namespace: Option<String>,
+
+        /// Import every candidate without prompting
+        #[arg(long)]
+        all: bool,
+
+        /// Report what would be imported without prompting or writing anything
+        #[arg(long)]
+        dry_run: bool,
     },
 }

@@ -8,6 +8,7 @@ mod core;
 mod filter;
 mod gpt;
 mod gui;
+mod history;
 mod hoard;
 mod store;
 mod theme;

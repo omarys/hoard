@@ -247,9 +247,9 @@ hoard pick --name summarize-jsonl --raw > ./summarize-jsonl.saved.py
 ```
 
 Inspect the summary and source together with
-`hoard list --json --filter summarize-jsonl`. Despite the flag name, this fork's
-structured output is YAML. `hoard list --simple` and the interactive list also
-show descriptions.
+`hoard list --json --filter summarize-jsonl`. The structured listing is JSON
+(see *Agent retrieval* below), while `hoard export` remains the YAML/trove-file
+path. `hoard list --simple` and the interactive list also show descriptions.
 
 Selecting a Python entry in the shell plugin, or using `hoard pick -n NAME`
 without `--raw`, prints a single-line `python3 -c` invocation. Hoard does not run
@@ -283,6 +283,78 @@ Commands are stored in a local SQLite database at `~/.config/hoard/trove.db` (WA
 If there is a `trove.db` file present in the local directory, `hoard` will only load this database and not display your "global" trove! A legacy `trove.yml` next to the database is imported automatically on first run.
 ( Edit ~/.config/hoard/config.yml `read_from_current_directory` to disable )
 
+#### Import history
+
+`hoard history` finds commands you already ran and never hoarded. It reads zsh
+history (`$HISTFILE`, else `~/.zsh_history`, extended format included) and the
+tool calls of your pi / pi-bolt agent sessions (`~/.pi/agent/sessions` and
+`~/.pi-bolt/agent/sessions`), then offers the candidates.
+
+```sh
+# Read-only report: what would be imported, and what was filtered out.
+hoard history scan
+hoard history scan --source zsh --json
+
+# Interactive multi-select, then save the chosen entries.
+hoard history import
+
+# Without prompts; --limit caps the count and --dry-run writes nothing.
+hoard history import --all --limit 20 --dry-run
+hoard history import --all
+```
+
+Entries are filed by origin — shell history into the `history` namespace, agent
+session commands into `pi` — and tagged `imported` plus the source name. Pass
+`--namespace NS` to override both. Names are slugified from the first line, so a
+multi-line command is stored whole under a name from its first line.
+
+Navigation-only commands (`cd`, `ls`, `pwd`, `clear`, ...) and duplicates are
+dropped. Secrets found in a candidate are replaced by `#name!` parameters, the
+same convention `hoard run` substitutes, and an entry that is nothing but a
+secret is skipped. `--trufflehog auto` (the default) adds a second pass through
+[trufflehog](https://github.com/trufflesecurity/trufflehog) when it is on `PATH`;
+use `off` to rely on the built-in rules only, or pass a path to a specific
+binary. A missing or failing scanner is reported as a warning and the import
+continues.
+
+Imported entries are also tagged for retrieval: the program they run, a few
+synonyms (`kubectl` → `kubernetes`, `k8s`), and up to three intents
+(`secrets`, `network`, `deploy`, ...). Intents include tool families such as
+`kubernetes`, `containers` and `aws`, so a command run through a wrapper
+(`rtk kubectl logs ...`) still answers a search for its tool. Tags end with
+`imported` and the source tag. Tags are lowercase and deduplicated and an entry
+never carries more than eight of them. Tags only affect searching: they never
+change which candidates are imported.
+
+#### Agent retrieval
+
+`hoard list` is the machine-readable retrieval path:
+
+```sh
+# JSON: {version, commands:[{name, command, kind, description, namespace,
+# tags, created}]}, pretty-printed with two spaces, best match first.
+hoard list --json
+hoard list --json --filter kubernetes
+
+# The single best match, as a table row or as one JSON object.
+hoard list --best --filter deploy
+hoard list --best --json --filter deploy
+
+# Only the stored command, so an agent can pipe it into a shell.
+hoard list --raw --filter deploy
+```
+
+Ranking scores a name hit highest, then an exact tag, a name substring, a tag
+substring, the namespace, the description and the command body, so a curated tag
+beats an incidental mention in a longer name. A multi-word filter requires every
+word to match somewhere and falls back to any-word matching when that finds
+nothing; ties break on `(namespace, name)`. Commands found by a filter are
+returned in that ranked order, and `--best` takes the first. When nothing
+matches, `--best` and `--raw` print nothing on
+stdout, explain the miss on stderr and exit with status 1. `--raw` implies
+`--best` and ignores `--json`. `hoard export` remains the YAML/trove-file path;
+`list --json` is not a trove file.
+
 #### chatGPT integration
 
 When running `hoard list` or through the hoard shortcut, press `Ctrl-a` to be asked for a prompt.
@@ -314,8 +386,9 @@ git push
 
 `--all` and `--namespace` select entries without prompting, so the export can run
 unattended: use `hoard export --namespace kubernetes,git --path ./trove.yml` for a
-subset. (For a one-off filtered archive, `hoard list --json --filter <query> >
-trove.yml` also emits YAML.)
+subset. (For a one-off filtered archive, `hoard export --namespace a,b --path
+./trove.yml` is the YAML path; `hoard list --json --filter <query>` emits JSON
+for agents, not a trove file.)
 
 Inspect the export for credentials and other sensitive values before committing it. On another system:
 

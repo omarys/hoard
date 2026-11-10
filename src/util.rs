@@ -1,3 +1,32 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// `YYYY-MM-DD` for a timestamp, or `None` when it predates the Unix epoch.
+pub fn iso_date(time: SystemTime) -> Option<String> {
+    let millis = time.duration_since(UNIX_EPOCH).ok()?.as_millis();
+    let days = i64::try_from(millis / 1_000).ok()? / 86_400;
+    let (year, month, day) = civil_from_days(days);
+    Some(format!("{year:04}-{month:02}-{day:02}"))
+}
+
+/// Howard Hinnant's `civil_from_days`, for the days since 1970-01-01.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let mp = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    (
+        if month <= 2 { year + 1 } else { year },
+        u32::try_from(month).unwrap_or(1),
+        u32::try_from(day).unwrap_or(1),
+    )
+}
+
 pub fn translate_number_to_nth(count: u16) -> String {
     match count {
         0 => "first".to_string(),
@@ -55,6 +84,17 @@ pub fn split_with_delim(s: &str, delim: &str) -> Vec<String> {
 #[cfg(test)]
 mod test_commands {
     use super::*;
+
+    #[test]
+    fn iso_date_formats_known_days() {
+        let day = |days: u64| UNIX_EPOCH + std::time::Duration::from_secs(days * 86_400);
+        assert_eq!(iso_date(day(0)), Some("1970-01-01".to_string()));
+        assert_eq!(iso_date(day(20_512)), Some("2026-02-28".to_string()));
+        assert_eq!(
+            iso_date(UNIX_EPOCH - std::time::Duration::from_secs(1)),
+            None
+        );
+    }
 
     #[test]
     fn extract_named_parameter() {

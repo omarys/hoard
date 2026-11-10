@@ -19,13 +19,17 @@ where
     let options_texts: Vec<S> = options.iter().map(text_extractor).collect();
 
     if matches!(prompt_yes_or_no(question), Confirmation::Yes) {
-        let selected_indices = MultiSelect::with_theme(&HoardTheme::default())
+        match MultiSelect::with_theme(&HoardTheme::default())
             .with_prompt(selection_prompt)
             .items(options_texts)
             .interact()
-            .unwrap();
-
-        take_elements_by_indices(options, &selected_indices)
+        {
+            Ok(selected_indices) => take_elements_by_indices(options, &selected_indices),
+            Err(err) => {
+                warn_no_console("selection", &err);
+                Vec::new()
+            }
+        }
     } else {
         options.to_vec()
     }
@@ -39,7 +43,11 @@ pub fn prompt_yes_or_no(text: &str) -> Confirmation {
         .items(["Yes", "No"])
         .default(YES_ANSWER)
         .interact()
-        .unwrap();
+        .unwrap_or_else(|err| {
+            warn_no_console("question", &err);
+            // "No" is the answer that changes nothing.
+            1
+        });
 
     if answer == YES_ANSWER {
         Confirmation::Yes
@@ -54,7 +62,10 @@ pub fn prompt_select_with_options(text_prompt: &str, options: &[&str]) -> usize 
         .items(options.iter().copied())
         .default(0)
         .interact()
-        .unwrap()
+        .unwrap_or_else(|err| {
+            warn_no_console("choice", &err);
+            0
+        })
 }
 
 pub fn prompt_input(text: &str, allow_empty: bool, default_value: Option<String>) -> String {
@@ -78,15 +89,31 @@ where
 {
     let theme = HoardTheme::default();
     let mut input = Input::with_theme(&theme).with_prompt(text);
+    let mut fallback = String::new();
     // Add default value to input prompt
     if let Some(val) = default_value {
+        fallback = val.clone();
         input = input.default(val);
     }
     // Add validator if any
     if let Some(val) = validator {
         input = input.validate_with(val);
     }
-    input.allow_empty(allow_empty).interact_text().unwrap()
+    input
+        .allow_empty(allow_empty)
+        .interact_text()
+        .unwrap_or_else(|err| {
+            warn_no_console("input", &err);
+            fallback
+        })
+}
+
+/// Report a prompt that could not run, e.g. when stdin is not a terminal.
+///
+/// Prompting is impossible without a console, so callers fall back to the
+/// answer that changes nothing instead of panicking.
+fn warn_no_console(what: &str, err: &dialoguer::Error) {
+    eprintln!("cannot ask for {what} ({err}); proceeding with the safe default");
 }
 
 fn take_elements_by_indices<T>(elements: &[T], indices: &[usize]) -> Vec<T>

@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
+- 🤖 **Agent retrieval through `hoard list`**: `--json` now emits real JSON
+  (`{version, commands:[{name, command, kind, description, namespace, tags,
+  created}]}`, created as an ISO date or `null`, pretty-printed with two spaces)
+  instead of YAML. New `--best` returns only the single highest-scoring match for
+  `--filter`, and `--raw` prints just that command for piping into a shell. A miss
+  prints nothing on stdout, a `no match for "<filter>"` line on stderr, and exits
+  1. `hoard export` stays the YAML/trove-file path.
+- 🏷️ History imports carry searchable tags: the program, a few synonyms and up to
+  three intents, then `imported` and the source tag (lowercase, deduplicated, at
+  most eight). Tags change findability only, not what is imported.
+- ✨ `hoard history scan` and `hoard history import` mine commands you already ran
+  from zsh history (`$HISTFILE`, else `~/.zsh_history`, extended format,
+  multi-line entries and pasted commands included) and from pi / pi-bolt agent
+  sessions (`bash` tool calls, written `.py` files, `ctx_execute` Python). `scan`
+  is a read-only report of raw entries, candidates, duplicates, noise, redactions
+  and secret-only skips (`--json` for machines); `import` is an interactive
+  multi-select with `--all`, `--limit N` and `--dry-run`. Candidates are filed per
+  source (`history` for shell history, `pi` for sessions, `--namespace` overrides
+  both) and tagged `imported`. Navigation noise is filtered, secrets are replaced
+  by `#name!` parameters, and an entry that is nothing but a secret is skipped; an
+  optional batched trufflehog pass (`--trufflehog auto|off|PATH`) adds
+  detector-grade redaction without aborting the import when the binary is missing
+  or fails.
 - 🧹 **Removed the `hoard sync` cloud feature** (this fork is local-only): the `sync
   register/login/logout/save/get/revert` subcommands, the sync client and its server
   calls, `sync_models.rs`, the `sync_server_url` and `api_token` config keys, the
