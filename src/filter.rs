@@ -37,6 +37,11 @@ pub fn search<'a>(trove: &'a Trove, query: &str) -> Vec<&'a HoardCmd> {
 }
 
 /// Score candidates in descending order; `require_all` selects AND or OR matching.
+///
+/// The OR fallback only keeps *structural* matches (a name, tag or namespace
+/// hit). A command that merely mentions both words somewhere in its body is not
+/// an answer to the query, and handing one to an agent that will run it is
+/// worse than admitting there is no match.
 fn ranked<'a>(trove: &'a Trove, words: &[String], require_all: bool) -> Vec<(u32, &'a HoardCmd)> {
     let mut ranked: Vec<(u32, &HoardCmd)> = trove
         .commands
@@ -44,17 +49,19 @@ fn ranked<'a>(trove: &'a Trove, words: &[String], require_all: bool) -> Vec<(u32
         .filter_map(|command| {
             let mut score = 0;
             let mut matched = 0;
+            let mut strongest = 0;
             for word in words {
                 let word_score = word_score(command, word);
                 if word_score > 0 {
                     matched += 1;
                     score += word_score;
+                    strongest = strongest.max(word_score);
                 }
             }
             let hit = if require_all {
                 matched == words.len()
             } else {
-                matched > 0
+                matched > 0 && strongest >= TAG_CONTAINS
             };
             hit.then_some((score, command))
         })
@@ -182,10 +189,12 @@ mod test_filter {
             command("compose", "dev", "docker compose up -d", "containers"),
         ]);
         let both = search(&trove, "git compose");
-        // AND yields nothing, so any-word matching takes over.
+        // AND yields nothing, so any-word matching takes over — but only
+        // structural hits qualify: `git status` matched "git" in its body
+        // alone, which is not an answer.
         assert_eq!(
             both.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
-            vec!["compose", "status"]
+            vec!["compose"]
         );
         let only = search(&trove, "git status");
         assert_eq!(only.len(), 1);

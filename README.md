@@ -322,7 +322,10 @@ synonyms (`kubectl` → `kubernetes`, `k8s`), and up to three intents
 (`secrets`, `network`, `deploy`, ...). Intents include tool families such as
 `kubernetes`, `containers` and `aws`, so a command run through a wrapper
 (`rtk kubectl logs ...`) still answers a search for its tool. Tags end with
-`imported` and the source tag. Tags are lowercase and deduplicated and an entry
+`imported` and the source tag. Intent words must stand alone: `cargo clippy` is `test`, `--no-check-certificate`
+is not, and `log-collection` is not a log command. A leading `cd <path>` is
+context rather than the program, so `cd /tmp && cargo build` is tagged `cargo`.
+Tags are lowercase and deduplicated and an entry
 never carries more than eight of them. Tags only affect searching: they never
 change which candidates are imported.
 
@@ -348,7 +351,10 @@ Ranking scores a name hit highest, then an exact tag, a name substring, a tag
 substring, the namespace, the description and the command body, so a curated tag
 beats an incidental mention in a longer name. A multi-word filter requires every
 word to match somewhere and falls back to any-word matching when that finds
-nothing; ties break on `(namespace, name)`. Commands found by a filter are
+nothing — but the fallback only keeps structural hits (name, tag or namespace),
+so a command that merely mentions both words in its body reports `no match`
+instead of handing an agent the wrong line to run. Ties break on
+`(namespace, name)`. Commands found by a filter are
 returned in that ranked order, and `--best` takes the first. When nothing
 matches, `--best` and `--raw` print nothing on
 stdout, explain the miss on stderr and exit with status 1. `--raw` implies

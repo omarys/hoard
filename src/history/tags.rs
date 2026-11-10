@@ -21,39 +21,69 @@ const MAX_INTENTS: usize = 3;
 /// Prefixes that wrap the real program (`sudo time env kubectl …`).
 const WRAPPERS: &[&str] = &["sudo", "time", "env", "nohup", "command", "exec", "xargs"];
 
+/// How a single intent recognises a command.
+enum Rule {
+    /// A regular expression over the whole command.
+    Pattern(&'static str),
+    /// Whole words, so `--no-check-certificate` cannot tag an entry `test`.
+    Token(&'static [&'static str]),
+}
+
+const BUILD_WORDS: &[&str] = &["build", "make", "compile", "install"];
+const TEST_WORDS: &[&str] = &[
+    "test", "tests", "lint", "check", "fmt", "clippy", "pytest", "nextest",
+];
+
 /// Intent tags in priority order; only the first [`MAX_INTENTS`] matches count.
 ///
 /// The order is the specificity order: `secrets` says more about a command than
 /// the generic `files` it may also touch.
-const INTENTS: &[(&str, &str)] = &[
+const INTENTS: &[(&str, Rule)] = &[
     (
         "secrets",
-        r"secret|password|passwd|token|api[_-]?key|private[_-]?key|vault|sops",
+        Rule::Pattern(r"secret|password|passwd|token|api[_-]?key|private[_-]?key|vault|sops"),
     ),
     // Tool families, because the program tag is lost when a wrapper runs the
     // tool: `rtk kubectl logs …` is tagged `rtk` but must still answer a search
     // for "kubernetes".
     (
         "kubernetes",
-        r"kubectl|\bk8s\b|helm |deployment|statefulset|daemonset|kustomize",
+        Rule::Pattern(r"kubectl|\bk8s\b|helm |deployment|statefulset|daemonset|kustomize"),
     ),
-    ("containers", r"docker|podman|container"),
-    ("aws", r"\baws\b|s3api|\becr\b|\becs\b|\bssm\b"),
+    ("containers", Rule::Pattern(r"docker|podman|container")),
+    (
+        "aws",
+        Rule::Pattern(r"\baws\b|s3api|\becr\b|\becs\b|\bssm\b"),
+    ),
     (
         "network",
-        r"curl|wget|http://|https://|ssh |nc |ping |dig |--host",
+        Rule::Pattern(r"curl|wget|http://|https://|ssh |nc |ping |dig |--host"),
     ),
-    ("storage", r"s3|bucket|scp|rsync|tar |rclone"),
+    ("storage", Rule::Pattern(r"s3|bucket|scp|rsync|tar |rclone")),
     (
         "deploy",
-        r"apply|deploy|rollout|helm |terraform apply|tofu apply|systemctl (start|restart)",
+        Rule::Pattern(
+            r"apply|deploy|rollout|helm |terraform apply|tofu apply|systemctl (start|restart)",
+        ),
     ),
-    ("logs", r"log|journalctl|tail -f"),
-    ("build", r"build|make |compile|install"),
-    ("test", r"test|lint|check|fmt|clippy"),
-    ("process", r"\bps\b|kill|pgrep|pkill|systemctl"),
-    ("files", r"find |rg --files|\bls\b|mkdir|rm -rf"),
-    ("permissions", r"chmod|chown|sudo"),
+    // Word boundaries alone are not enough: `log-collection` has a boundary after
+    // `log` because of the hyphen. Require the whole token, delimited by
+    // whitespace or a shell separator.
+    (
+        "logs",
+        Rule::Pattern(r"(?:^|[\s;&|(])logs?(?:[\s;&|)]|$)|journalctl|tail -f"),
+    ),
+    ("build", Rule::Token(BUILD_WORDS)),
+    ("test", Rule::Token(TEST_WORDS)),
+    (
+        "process",
+        Rule::Pattern(r"\bps\b|kill|pgrep|pkill|systemctl"),
+    ),
+    (
+        "files",
+        Rule::Pattern(r"find |rg --files|\bls\b|mkdir|rm -rf"),
+    ),
+    ("permissions", Rule::Pattern(r"chmod|chown|sudo")),
 ];
 
 /// Program -> related search terms. Deliberately short: every entry is a guess
@@ -83,7 +113,7 @@ fn synonyms(program: &str) -> &'static [&'static str] {
         "cargo" => &["rust", "build"],
         "npm" | "pnpm" | "yarn" | "bun" => &["nodejs", "packages"],
         "uv" | "pip" | "pipx" | "poetry" => &["python", "packages"],
-        "python" => &["python"],
+        "python" | "python3" => &["python"],
         "systemctl" => &["systemd", "service"],
         "journalctl" => &["systemd", "logs"],
         "psql" | "mysql" | "sqlite3" => &["database", "sql"],
@@ -140,22 +170,45 @@ fn push_unique(tags: &mut Vec<String>, tag: String) {
 /// The intent tags of a command, most specific first.
 fn intents(command: &str) -> Vec<&'static str> {
     static MATCHERS: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
-    MATCHERS
-        .get_or_init(|| {
-            INTENTS
+    let matchers = MATCHERS.get_or_init(|| {
+        INTENTS
+            .iter()
+            .filter_map(|(name, rule)| match rule {
+                Rule::Pattern(pattern) => Some((
+                    Regex::new(&format!("(?i:{pattern})"))
+                        .expect("intent patterns are valid regexes"),
+                    *name,
+                )),
+                Rule::Token(_) => None,
+            })
+            .collect()
+    });
+    let mut tags = Vec::new();
+    for (name, rule) in INTENTS {
+        let hit = match rule {
+            Rule::Pattern(_) => matchers
                 .iter()
-                .map(|(name, pattern)| {
-                    let regex = Regex::new(&format!("(?i:{pattern})"))
-                        .expect("intent patterns are valid regexes");
-                    (regex, *name)
-                })
-                .collect()
-        })
-        .iter()
-        .filter(|(regex, _)| regex.is_match(command))
-        .map(|(_, name)| *name)
-        .take(MAX_INTENTS)
-        .collect()
+                .find(|(_, candidate)| candidate == name)
+                .is_some_and(|(regex, _)| regex.is_match(command)),
+            Rule::Token(words) => has_token(command, words),
+        };
+        if hit {
+            tags.push(*name);
+            if tags.len() == MAX_INTENTS {
+                break;
+            }
+        }
+    }
+    tags
+}
+
+/// Whether one of `words` appears as a whole token, so `--check` counts and
+/// `--no-check-certificate` does not.
+fn has_token(command: &str, words: &[&str]) -> bool {
+    command
+        .split(|c: char| c.is_whitespace() || matches!(c, '|' | ';' | '&' | '(' | ')' | ',' | '='))
+        .map(|token| token.trim_matches(|c: char| c == '-' || c == '"' || c == '\''))
+        .any(|token| words.iter().any(|word| token.eq_ignore_ascii_case(word)))
 }
 
 /// The program a shell command runs, as a tag-safe name.
@@ -166,11 +219,24 @@ fn intents(command: &str) -> Vec<&'static str> {
 fn program(command: &str) -> Option<String> {
     // `&&` is one separator; `|`, `;` and `(` split the surrounding pipeline.
     let normalized = command.replace("&&", " ");
-    for token in normalized.split(|c: char| c.is_whitespace() || matches!(c, '|' | ';' | '(')) {
-        if token.is_empty() || token.starts_with('-') || token.starts_with('#') {
+    let tokens: Vec<&str> = normalized
+        .split(|c: char| c.is_whitespace() || matches!(c, '|' | ';' | '('))
+        .filter(|token| !token.is_empty())
+        .collect();
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index];
+        // A leading `cd <path>` is context, not the thing the command does; skip
+        // it with its argument so `cd /tmp && cargo build` reads as `cargo`.
+        if matches!(token, "cd" | "pushd") {
+            index += 2;
             continue;
         }
-        if WRAPPERS.contains(&token.to_ascii_lowercase().as_str()) {
+        index += 1;
+        if token.starts_with('-')
+            || token.starts_with('#')
+            || WRAPPERS.contains(&token.to_ascii_lowercase().as_str())
+        {
             continue;
         }
         let base = token
@@ -246,6 +312,65 @@ mod test_tags {
         );
         assert!(synonyms("kubectl").contains(&"k8s"));
         assert!(synonyms("definitely-not-mapped").is_empty());
+    }
+
+    #[test]
+    fn a_leading_cd_is_context_not_the_program() {
+        assert_eq!(
+            tags_for(
+                "cd /tmp/pi-subagents/x; python3 -c \"print(1)\"",
+                CommandKind::Shell,
+                Origin::Pi
+            ),
+            vec!["python3", "python", "imported", "pi"]
+        );
+        assert_eq!(
+            tags_for(
+                "cd ~/Dev/hoard && cargo build",
+                CommandKind::Shell,
+                Origin::Pi
+            ),
+            vec!["cargo", "rust", "build", "imported", "pi"]
+        );
+    }
+
+    #[test]
+    fn build_and_test_intents_need_whole_words() {
+        // `--no-check-certificate` is not a test, and `log-collection` is not a log.
+        assert_eq!(
+            tags_for(
+                "wget --no-check-certificate https://x/y",
+                CommandKind::Shell,
+                Origin::Pi
+            ),
+            vec!["wget", "http", "network", "imported", "pi"]
+        );
+        assert!(
+            tags_for("cargo clippy --all-targets", CommandKind::Shell, Origin::Pi)
+                .contains(&"test".to_string())
+        );
+    }
+
+    #[test]
+    fn log_intent_needs_a_word_boundary() {
+        // `log-collection` is a namespace name in the operator's cluster; it must
+        // not tag every command that touched it as a log command.
+        assert!(
+            !tags_for(
+                "kubectl get pods -n log-collection-2",
+                CommandKind::Shell,
+                Origin::Pi
+            )
+            .contains(&"logs".to_string())
+        );
+        assert!(
+            tags_for(
+                "rtk kubectl logs -n cti pod/x",
+                CommandKind::Shell,
+                Origin::Pi
+            )
+            .contains(&"logs".to_string())
+        );
     }
 
     #[test]

@@ -11,6 +11,11 @@ This project adheres to [Semantic Versioning](http://semver.org/).
   `--filter`, and `--raw` prints just that command for piping into a shell. A miss
   prints nothing on stdout, a `no match for "<filter>"` line on stderr, and exits
   1. `hoard export` stays the YAML/trove-file path.
+- 🎯 Ranking precision: intent words must be whole tokens (`cargo clippy` is
+  `test`, `--no-check-certificate` is not, `log-collection` is not a log
+  command) and a leading `cd <path>` no longer becomes the program tag. The
+  any-word fallback of `--filter` now only accepts name/tag/namespace hits, so a
+  body-only coincidence reports no match instead of a wrong command.
 - 🏷️ History imports carry searchable tags: the program, a few synonyms and up to
   three intents, then `imported` and the source tag (lowercase, deduplicated, at
   most eight). Tags change findability only, not what is imported.
