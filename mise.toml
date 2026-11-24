@@ -5,9 +5,20 @@
 
 [tools]
 # Rust toolchain. hoard uses edition 2024 (needs >= 1.85).
-rust = "1.99.0"
+rust = "1.100.0"
 # Git hook runner driving .pre-commit-config.yaml
 pre-commit = "latest"
 
 [tasks]
 pre-commit = { run = "pre-commit run --all-files" }
+
+# Import new commands from ~/.zsh_history into the trove.
+#
+#   mise run hoard:scan               # preview only, writes nothing
+#   mise run hoard:import             # import the commands the trove lacks
+#   mise run hoard:import -- --json   # one compact JSON document
+#   mise run hoard:import -- --dry-run --histfile ~/old_zsh_history -n mine
+#
+# Re-running is safe: hoard skips every command already in the trove.
+"hoard:import" = { run = "./scripts/import-zsh-history.sh", description = "Import commands from ~/.zsh_history that are not in the trove yet" }
+"hoard:scan" = { run = "./scripts/import-zsh-history.sh --dry-run", description = "Preview what hoard would import from ~/.zsh_history" }

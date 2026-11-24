@@ -309,6 +309,23 @@ hoard history import --all --limit 20 --dry-run
 hoard history import --all
 ```
 
+If all you want is "everything in my zsh history that I do not have yet", the
+helper script runs the same thing with the right flags, and the mise tasks run
+the script:
+
+```sh
+mise run hoard:scan                 # preview only, writes nothing
+mise run hoard:import               # import what the trove lacks
+mise run hoard:import -- --json     # one compact JSON document
+
+./scripts/import-zsh-history.sh --dry-run --histfile ~/old_zsh_history -n mine
+```
+
+It reads `$HISTFILE` (else `~/.zsh_history`) and is safe to re-run — entries the
+trove already holds are skipped — so a cron job or shell hook can call it. The
+binary comes from `$HOARD_BIN`, else a `./target/{release,debug}` build of this
+checkout, else `$PATH`.
+
 Entries are filed by origin — shell history into the `history` namespace, agent
 session commands into `pi` — and tagged `imported` plus the source name. Pass
 `--namespace NS` to override both. Names are slugified from the first line, so a

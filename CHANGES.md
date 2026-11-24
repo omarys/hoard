@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
+- 📥 **`scripts/import-zsh-history.sh` + mise tasks.** `mise run hoard:scan` shows
+  what a zsh history would contribute, `mise run hoard:import` stores only the
+  commands the trove does not already hold (re-running is a no-op, so a hook or
+  cron job can call it), and `mise run hoard:import -- --json` yields one compact
+  document. `--histfile`, `--namespace`, `--limit`, `--trufflehog` and `--dry-run`
+  pass through; the binary comes from `$HOARD_BIN`, else this checkout's
+  `target/{release,debug}`, else `$PATH`. Its own failures (`HistoryNotFound`, an
+  unknown flag) exit `1` and, in `--json` mode, are a JSON object on stdout.
+  `tests/import_script.rs` drives the script the way the tasks do.
 - 🤖 **Headless contract for agents.** Every subcommand accepts `--json` (`-j`) and an
   error now exits with a fixed code per class: `1` ParseError, `2` CommandNotFound,
   `3` InvalidParameter, `4` RuntimeError (`0` on success). In JSON mode the error
